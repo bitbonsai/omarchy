@@ -20,11 +20,19 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 AGENT_ID = "opencode"
 AGENT_NAME = "OpenCode"
+
+# The subscription meters live on the Zen "go" gateway; the plain gateway has
+# no usage endpoint. Limits are per-account, so they come from the same key
+# regardless of which provider id a given run used.
+DEFAULT_USAGE_URL = "https://opencode.ai/zen/go/v1/usage"
+AUTH_HELP = "Run `opencode providers login`, set OPENCODE_API_KEY, or sign in with pi to read subscription limits."
 
 # The subscription has two provider ids: "opencode" for the plain Zen
 # gateway and "opencode-go" for the Go plan. Both spend the same account and
@@ -45,6 +53,15 @@ def number(value):
     return int(value or 0)
   except Exception:
     return 0
+
+
+# Usage percentages arrive as 0-100; the record contract wants 0-1. An
+# unreadable value returns -1 so the caller can drop the window.
+def fraction(value):
+  try:
+    return float(value) / 100.0
+  except (TypeError, ValueError):
+    return -1.0
 
 
 def model_name(raw):
@@ -403,6 +420,95 @@ def _cached_local_stats(max_age):
     return stats
 
 
+def read_auth_key(path):
+  try:
+    parsed = json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, ValueError):
+    return ""
+  if not isinstance(parsed, dict):
+    return ""
+  for provider in PROVIDERS:
+    entry = parsed.get(provider)
+    if isinstance(entry, dict) and entry.get("key"):
+      return str(entry["key"]).strip()
+  return ""
+
+
+def subscription_key():
+  # An explicit key wins, then opencode's own credential store, then pi's. pi
+  # drives the same Zen subscription and records it under the same provider
+  # ids, so a machine that codes through pi never signs the opencode CLI in.
+  explicit = str(os.environ.get("OPENCODE_API_KEY", "")).strip()
+  if explicit:
+    return explicit
+  data_home = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
+  key = read_auth_key(data_home / "opencode" / "auth.json")
+  if key:
+    return key
+  return read_auth_key(Path.home() / ".pi" / "agent" / "auth.json")
+
+
+def collect_limits():
+  result = {"limits": [], "tierLabel": "", "usageStatusText": "Local usage only", "authHelpText": "", "retryAdvised": False}
+  key = subscription_key()
+  if not key:
+    result["authHelpText"] = AUTH_HELP
+    return result
+
+  url = os.environ.get("OPENCODE_USAGE_URL") or DEFAULT_USAGE_URL
+  request = urllib.request.Request(url, headers={
+    "Authorization": "Bearer " + key,
+    "Accept": "application/json",
+    # The gateway sits behind Cloudflare, which rejects the default urllib
+    # signature with a 1010 before the request ever reaches the API.
+    "User-Agent": "Mozilla/5.0",
+  })
+  try:
+    with urllib.request.urlopen(request, timeout=10) as response:
+      payload = json.loads(response.read().decode("utf-8", errors="replace"))
+  except urllib.error.HTTPError as error:
+    if error.code in (401, 403):
+      result["usageStatusText"] = "OpenCode limits need a fresh key"
+      result["authHelpText"] = AUTH_HELP
+    else:
+      result["usageStatusText"] = f"OpenCode limits returned {error.code}"
+    return result
+  except Exception:
+    # A transport failure reached no server at all — no route, no DNS. Any
+    # real answer, including an error status, is a server we should stop
+    # pestering; this is not.
+    result["usageStatusText"] = "OpenCode limits unavailable"
+    result["retryAdvised"] = True
+    return result
+
+  usage = payload.get("usage") if isinstance(payload, dict) else None
+  if not isinstance(usage, dict):
+    result["usageStatusText"] = "OpenCode limits unavailable"
+    return result
+
+  limits = []
+  for name, label in (("rolling", "Rolling"), ("weekly", "Weekly (7-day)"), ("monthly", "Monthly")):
+    window = usage.get(name)
+    if not isinstance(window, dict):
+      continue
+    percent = fraction(window.get("percent"))
+    if percent < 0:
+      continue
+    limits.append({
+      "label": label,
+      "percent": max(0.0, min(1.0, percent)),
+      "resetsAt": str(window.get("resetsAt") or ""),
+    })
+
+  if not limits:
+    result["usageStatusText"] = "OpenCode limits unavailable"
+    return result
+  result["limits"] = limits
+  result["tierLabel"] = "Go"
+  result["usageStatusText"] = ""
+  return result
+
+
 def main():
   parser = argparse.ArgumentParser()
   # --force rescans everything and rewrites the cache. --limits-only is kept
@@ -416,6 +522,8 @@ def main():
 
   max_age = 0 if args.force else (LIMITS_ONLY_REUSE_SECONDS if args.limits_only else SCAN_REUSE_SECONDS)
   stats = cached_local_stats(max_age)
+  limits = collect_limits()
+  retry_advised = bool(limits.pop("retryAdvised", False))
 
   record = {
     "schemaVersion": 1,
@@ -424,12 +532,11 @@ def main():
     "updatedAt": datetime.now(timezone.utc).isoformat(),
     "ready": True,
     "hasLocalStats": True,
-    "limits": [],
-    "tierLabel": "",
-    "usageStatusText": "",
-    "authHelpText": "",
   }
   record.update(stats)
+  record.update(limits)
+  if retry_advised:
+    record["retryAdvised"] = True
   print(json.dumps(record, separators=(",", ":")))
 
 
