@@ -109,3 +109,50 @@ result=$(HOME="$CACHE_HOME" XDG_CACHE_HOME="$CACHE_HOME/.cache" XDG_DATA_HOME="$
 [[ $(jq -r '.todayTotalTokens' <<<"$result") == "10" && $(jq -r '.totalPrompts' <<<"$result") == "1" ]] ||
   fail "OpenCode collector --limits-only emits a complete record from cache" "$result"
 pass "OpenCode collector caches and reuses local stats"
+
+# Some builds move the same message JSON into session_message with the role in
+# a type column. It must be read when `message` has no assistant rows, and
+# ignored when `message` does, so a session is never counted twice.
+SESSION_HOME=$(mktemp -d)
+trap 'rm -rf "$PI_HOME" "$OPENCODE_HOME" "$CACHE_HOME" "$SESSION_HOME"' EXIT
+
+python3 - "$SESSION_HOME/.local/share/opencode/opencode.db" <<'PY'
+import json
+import sqlite3
+import sys
+import time
+from pathlib import Path
+
+db = Path(sys.argv[1])
+db.parent.mkdir(parents=True, exist_ok=True)
+conn = sqlite3.connect(db)
+conn.execute(
+  "CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL,"
+  " seq integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)"
+)
+now_ms = int(time.time() * 1000)
+
+def message(id, kind, provider, model, input=0, output=0):
+  return (id, "ses_1", kind, 1, now_ms, now_ms, json.dumps({
+    "providerID": provider,
+    "modelID": model,
+    "tokens": {"input": input, "output": output, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+    "time": {"created": now_ms},
+  }))
+
+conn.executemany("INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)", [
+  message("msg_1", "assistant", "opencode", "deepseek-v4.1-flash", input=5, output=2),
+  message("msg_2", "user", "opencode", "deepseek-v4.1-flash"),
+  message("msg_3", "assistant", "anthropic", "claude-opus-5", input=999, output=999),
+])
+conn.commit()
+conn.close()
+PY
+
+result=$(HOME="$SESSION_HOME" XDG_CACHE_HOME="$SESSION_HOME/.cache" XDG_DATA_HOME="$SESSION_HOME/.local/share" \
+  PATH="$SESSION_HOME/bin:$PATH" "$ROOT/bin/omarchy-agent-usage-opencode")
+[[ $(jq -r '.todayTotalTokens' <<<"$result") == "7" ]] ||
+  fail "OpenCode collector falls back to the session_message store" "$result"
+[[ $(jq -r '.totalSessions' <<<"$result") == "1" ]] ||
+  fail "OpenCode collector counts a fallback session once" "$result"
+pass "OpenCode collector falls back to the session_message store"
