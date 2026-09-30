@@ -71,6 +71,27 @@ the panel repeatedly does not repeat the request, and cached windows are
 dropped once they reset. Without a key the panel still shows local token
 usage.
 
+### OpenCode plan name
+
+`GET /zen/go/v1/usage` answers with percents and reset times, and as of
+September 2026 its payload names no plan — nor does any endpoint an API key
+authenticates against. The record therefore states a plan only when one was
+actually seen, and the panel says "Subscription" rather than naming the $10 Go
+plan behind what may be a Go Plus account. A plan the endpoint does start
+reporting is used as it stands, so a future tier needs no change here.
+
+To name your own plan in the meantime, in `~/.config/omarchy/agents/opencode.json`
+(the same directory the Fireworks collector reads its funding from):
+
+```json
+{
+  "plan": "Go Plus"
+}
+```
+
+The file wins over the payload: it is a deliberate statement about an account
+the endpoint describes only in percents.
+
 ### Fireworks balance
 
 The collector first asks the account's `:getBalance` endpoint for the real
