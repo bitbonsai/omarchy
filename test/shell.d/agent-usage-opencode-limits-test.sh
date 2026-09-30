@@ -28,6 +28,10 @@ loader.exec_module(collector)
 home = os.environ["TEST_HOME"]
 os.environ["XDG_CACHE_HOME"] = os.path.join(home, "cache")
 limits_cache = pathlib.Path(os.environ["XDG_CACHE_HOME"]) / "omarchy" / "agent-usage" / "opencode-limits.json"
+# The plan override lives under the config home: sandbox it, so no case here
+# reads the operator's own file and a plan case cannot pass by accident.
+os.environ["XDG_CONFIG_HOME"] = os.path.join(home, "config")
+plan_config = pathlib.Path(os.environ["XDG_CONFIG_HOME"]) / "omarchy" / "agents" / "opencode.json"
 
 
 def check(description, condition, detail=""):
@@ -66,11 +70,14 @@ collector.urllib.request.urlopen = answer({"usage": {
   "weekly": {"percent": 6, "resetsAt": "2026-10-05T00:00:00.000Z"},
   "monthly": {"percent": 29, "resetsAt": "2026-10-11T15:38:40.000Z"},
 }})
+# The endpoint names no plan — its payload carries percents and reset times —
+# so the record must not announce the entry tier for what may be a Go Plus
+# account.
 result = collector.collect_limits(True)
 check(
   "OpenCode collector maps every Zen usage window",
   [(w["label"], w["percent"]) for w in result["limits"]] == [("Rolling (5h)", 0.16), ("Weekly (7-day)", 0.06), ("Monthly", 0.29)]
-  and result["tierLabel"] == "Go" and result["usageStatusText"] == "",
+  and result["tierLabel"] == "" and result["usageStatusText"] == "",
   json.dumps(result),
 )
 
@@ -161,6 +168,75 @@ check(
   [w["label"] for w in result["limits"]] == ["Monthly"],
   json.dumps(result),
 )
+
+# A plan the endpoint does report is used as it stands: that is what lets a
+# future tier (Go Plus today, whatever follows) appear without this collector
+# changing.
+clear_key()
+os.environ["OPENCODE_API_KEY"] = "zen_test"
+clear_cache()
+collector.urllib.request.urlopen = answer({
+  "usage": {"rolling": {"percent": 4, "resetsAt": "2999-01-01T00:00:00.000Z"}},
+  "plan": "Go Plus",
+})
+result = collector.collect_limits(True)
+check(
+  "OpenCode collector uses a plan the endpoint reports",
+  result["tierLabel"] == "Go Plus" and [w["label"] for w in result["limits"]] == ["Rolling (5h)"],
+  json.dumps(result),
+)
+
+# Until it does, the user can state their own plan: an explicit answer for an
+# account the endpoint describes only in percents.
+plan_config.parent.mkdir(parents=True, exist_ok=True)
+plan_config.write_text(json.dumps({"plan": "Go Plus"}))
+clear_cache()
+collector.urllib.request.urlopen = answer({"usage": {"rolling": {"percent": 4, "resetsAt": "2999-01-01T00:00:00.000Z"}}})
+result = collector.collect_limits(True)
+check(
+  "OpenCode collector reads the declared plan from the config file",
+  result["tierLabel"] == "Go Plus",
+  json.dumps(result),
+)
+
+# The file wins over the payload: a deliberate statement about the account
+# beats a field that would otherwise name the entry tier.
+collector.urllib.request.urlopen = answer({
+  "usage": {"rolling": {"percent": 4, "resetsAt": "2999-01-01T00:00:00.000Z"}},
+  "plan": "Go",
+})
+result = collector.collect_limits(True)
+check(
+  "OpenCode collector prefers the declared plan over the payload's",
+  result["tierLabel"] == "Go Plus",
+  json.dumps(result),
+)
+
+# A declared plan still labels a tab whose key has been removed, so a Zen user
+# who burned the subscription locally keeps their own name on it.
+clear_key()
+collector.urllib.request.urlopen = answer(error=RuntimeError("no key to probe with"))
+result = collector.collect_limits(True)
+check(
+  "OpenCode collector keeps the declared plan without a key",
+  result["tierLabel"] == "Go Plus" and result["usageStatusText"] == "Local usage only",
+  json.dumps(result),
+)
+
+plan_config.unlink()
+clear_cache()
+os.environ["OPENCODE_API_KEY"] = "zen_test"
+collector.urllib.request.urlopen = answer({"usage": {"rolling": {"percent": 4, "resetsAt": "2999-01-01T00:00:00.000Z"}}})
+result = collector.collect_limits(True)
+check(
+  "OpenCode collector leaves the plan blank when nothing states it",
+  result["tierLabel"] == "",
+  json.dumps(result),
+)
+
+# Leave the explicit key unset for the credential-resolution cases below, which
+# exercise the stores behind it.
+clear_key()
 
 # The key can come from opencode's own credential store or, when a machine
 # codes through pi, from pi's.

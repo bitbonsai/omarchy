@@ -42,6 +42,15 @@ PROBE_MIN_INTERVAL_SECONDS = 15
 # both appear in pi sessions and in opencode's own database.
 PROVIDERS = ("opencode", "opencode-go")
 
+# The plan behind the subscription is not something the usage endpoint reports:
+# its payload carries percents and reset times, and today it names no plan at
+# all. The record therefore states a plan only when one was actually seen. An
+# endpoint that starts naming one is enough for a future tier (Go Plus today,
+# whatever follows) to appear without this collector changing, and a user whose
+# plan the endpoint still hides can declare it in
+# ~/.config/omarchy/agents/opencode.json.
+PLAN_KEYS = ("plan", "planType", "plan_type", "planName", "plan_name", "tier", "planId", "plan_id")
+
 # A scan this recent is only reused to dedup concurrent collector runs (the
 # update command backgrounds one per agent while the panel refreshes on its
 # own); every periodic widget refresh lands a real rescan, however low
@@ -504,6 +513,47 @@ def subscription_key():
   return read_auth_key(Path.home() / ".pi" / "agent" / "auth.json")
 
 
+def config_path():
+  config_home = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+  return config_home / "omarchy" / "agents" / "opencode.json"
+
+
+def read_config():
+  try:
+    parsed = json.loads(config_path().read_text(encoding="utf-8"))
+  except (OSError, ValueError):
+    return {}
+  return parsed if isinstance(parsed, dict) else {}
+
+
+def plan_from_payload(payload):
+  """The plan the usage endpoint reports, or "" when it reports none."""
+  if not isinstance(payload, dict):
+    return ""
+  for container in (payload, payload.get("usage"), payload.get("subscription"), payload.get("account")):
+    if not isinstance(container, dict):
+      continue
+    for key in PLAN_KEYS:
+      plan = str(container.get(key) or "").strip()
+      if plan:
+        return plan
+  return ""
+
+
+def plan_label(payload=None, config=None):
+  """Plan name for the record: the user's own declaration, else what the endpoint said, else "".
+
+  The override file wins because it is a deliberate statement about an account
+  the endpoint describes only in percents; with neither source the label stays
+  empty and the panel says "Subscription" rather than naming a plan that was
+  never observed.
+  """
+  configured = str((config or {}).get("plan") or "").strip()
+  if configured:
+    return configured
+  return plan_from_payload(payload)
+
+
 def probe_limits(key):
   url = os.environ.get("OPENCODE_USAGE_URL") or DEFAULT_USAGE_URL
   request = urllib.request.Request(url, headers={
@@ -547,7 +597,7 @@ def probe_limits(key):
     })
   if not limits:
     return {"ok": False, "helpText": "OpenCode's usage endpoint returned no quota windows. Local OpenCode stats are still shown."}
-  return {"ok": True, "limits": limits}
+  return {"ok": True, "limits": limits, "plan": plan_from_payload(payload)}
 
 
 def limit_window_open(entry, now):
@@ -579,10 +629,16 @@ def collect_limits(force):
   probe_cache = cache_root() / "opencode-limits.json"
   cached = read_fresh_json(probe_cache, float("inf")) or {}
   fallback = open_cached_limits(cached)
+  # The plan is read from the user's override file once per run: it is a
+  # deliberate statement about the account, so it labels the tab whether or not
+  # a probe answers at all.
+  config = read_config()
+  cached_plan = {"plan": cached.get("plan")}
 
   key = subscription_key()
   if not key:
     result["limits"] = fallback
+    result["tierLabel"] = plan_label(payload=cached_plan, config=config)
     result["authHelpText"] = AUTH_HELP
     return result
 
@@ -591,17 +647,20 @@ def collect_limits(force):
   fetched_at = number(cached.get("fetchedAtMs")) / 1000.0
   if fallback and not force and 0 <= time.time() - fetched_at < PROBE_MIN_INTERVAL_SECONDS:
     result["limits"] = fallback
-    result["tierLabel"] = "Go"
+    result["tierLabel"] = plan_label(payload=cached_plan, config=config)
     result["usageStatusText"] = ""
     return result
 
   probe = probe_limits(key)
   if probe.get("ok"):
     result["limits"] = probe["limits"]
-    result["tierLabel"] = "Go"
+    result["tierLabel"] = plan_label(payload={"plan": probe.get("plan")}, config=config)
     result["usageStatusText"] = ""
     try:
-      write_json(probe_cache, {"fetchedAtMs": round(time.time() * 1000), "limits": probe["limits"]})
+      # The plan travels with the cached windows so a cache hit keeps whatever
+      # the endpoint last named, instead of forgetting it until the next probe.
+      write_json(probe_cache, {"fetchedAtMs": round(time.time() * 1000), "limits": probe["limits"],
+                               "plan": probe.get("plan", "")})
     except Exception:
       pass
     return result
@@ -611,9 +670,10 @@ def collect_limits(force):
   # Last good numbers beat an empty limits section while the probe is down.
   if fallback:
     result["limits"] = fallback
-    result["tierLabel"] = "Go"
+    result["tierLabel"] = plan_label(payload=cached_plan, config=config)
     result["usageStatusText"] = ""
   else:
+    result["tierLabel"] = plan_label(config=config)
     result["usageStatusText"] = "OpenCode limits unavailable"
     result["authHelpText"] = probe.get("helpText", "")
   return result
