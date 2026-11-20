@@ -123,6 +123,14 @@ case "$channel" in
     ;;
 esac
 
+# The omarchy packages depend on the desktop, so Omarchy Server runs Omarchy
+# from its checkout and takes only the settings package. Leaving dev would
+# leave it with no Omarchy at all.
+if [[ $(omarchy-edition) == "server" ]]; then
+  [[ $channel == "dev" ]] || fail "Omarchy Server runs Omarchy from a checkout, so only the dev channel works there; nothing changed."
+  packages=("${packages[@]:1}")
+fi
+
 # A channel this machine's platform has no templates for is refused before
 # anything changes (install/helpers/pacman.sh).
 source "$OMARCHY_PATH/install/helpers/pacman.sh"

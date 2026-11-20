@@ -8,6 +8,7 @@ copy_boundary_file bin/omarchy-channel-set
 copy_boundary_file bin/omarchy-refresh-pacman
 copy_boundary_file bin/omarchy-apply-pacman
 copy_boundary_file bin/omarchy-update
+copy_boundary_file bin/omarchy-edition
 export OMARCHY_UPDATE_LOGGED=1
 
 # Relocate the package root into the fixture, including the explicit handoff
@@ -96,6 +97,14 @@ for channel in stable; do
 done
 mv "$boundary_tmp/saved-template" "$SUDO_TEST_ROOT/default/pacman/aarch64-apple/pacman-stable.conf"
 pass "a platform without a stable template refuses stable before any change"
+
+# Omarchy Server runs from its checkout: a package channel would leave it with
+# no Omarchy, or pull in the desktop.
+reset_boundary
+if OMARCHY_EDITION=server run_channel stable; then fail "Omarchy Server accepted the stable channel"; fi
+if grep -Eq '^step:|^sudo ' "$SUDO_TEST_LOG"; then fail "Omarchy Server refused stable before any change" "$(<"$SUDO_TEST_LOG")"; fi
+grep -q "only the dev channel works there" "$boundary_tmp/output" || fail "the Server refusal says why" "$(<"$boundary_tmp/output")"
+pass "Omarchy Server refuses package channels before any change"
 
 # A channel the platform has no template for stops before anything, the dev
 # confirmation included.
