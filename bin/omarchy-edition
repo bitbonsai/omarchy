@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# omarchy:summary=Print the edition of this Omarchy install: desktop or server
+
+# Omarchy Server is the headless install: no Hyprland and no display, reached
+# over SSH. /etc/omarchy/edition holding "server" marks it; a missing file or
+# any other content means desktop. OMARCHY_EDITION overrides the file.
+
+edition=${OMARCHY_EDITION:-}
+if [[ -z $edition && -r /etc/omarchy/edition ]]; then
+  read -r edition </etc/omarchy/edition
+fi
+
+if [[ $edition == "server" ]]; then
+  echo "server"
+else
+  echo "desktop"
+fi

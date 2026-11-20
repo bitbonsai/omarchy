@@ -3,6 +3,7 @@
 # omarchy:summary=Toggle animations, blur and shadows, which are slow without a GPU
 # omarchy:args=[toggle|on|off]
 # omarchy:examples=omarchy toggle animations | omarchy toggle animations off | omarchy toggle animations on
+# omarchy:requires=desktop
 
 case ${1:-toggle} in
 toggle)

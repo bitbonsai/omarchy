@@ -18,6 +18,7 @@ declare -A COMMAND_ARGS
 declare -A COMMAND_EXAMPLES
 declare -A COMMAND_REQUIRES_SUDO
 declare -A COMMAND_HIDDEN
+declare -A COMMAND_REQUIRES
 declare -A COMMAND_ALIASES
 declare -A COMMAND_HAS_SUMMARY
 declare -A COMMAND_METADATA_ERRORS
@@ -25,6 +26,7 @@ declare -A ROUTE_TO_KEY
 declare -A ROUTE_IS_ALIAS
 declare -A BINARY_TO_KEY
 declare -A GROUP_DESCRIPTIONS
+declare -A DESKTOP_GROUPS
 
 GROUP_DESCRIPTIONS[agent]="AI coding agents, their usage, and subscription accounts"
 GROUP_DESCRIPTIONS[ascii]="Text drawn as ASCII art"
@@ -100,6 +102,21 @@ GROUP_DESCRIPTIONS[weather]="Weather status"
 GROUP_DESCRIPTIONS[webapp]="Web app launchers"
 GROUP_DESCRIPTIONS[wifi]="Wi-Fi helpers"
 GROUP_DESCRIPTIONS[windows]="Windows VM management"
+
+# Groups that need the desktop session. Omarchy Server has none, so there they
+# are left out of listings and refuse to run. A command in any other group
+# opts in with `# omarchy:requires=desktop`.
+for group in bar branding brightness capture clipboard crash dictation display dock file font games \
+  hyprland icons launch menu monitor notification osd plugin reminder shell theme tui voxtype webapp; do
+  DESKTOP_GROUPS[$group]=1
+done
+unset group
+
+# The same answer omarchy-edition prints, read here so dispatch spawns nothing.
+EDITION="${OMARCHY_EDITION:-}"
+if [[ -z $EDITION && -r /etc/omarchy/edition ]]; then
+  read -r EDITION </etc/omarchy/edition
+fi
 
 join_words() {
   local separator="$1"
@@ -183,6 +200,7 @@ register_command() {
   local aliases=""
   local requires_sudo=""
   local hidden=""
+  local requires=""
   local line=""
   local metadata_key=""
   local metadata_value=""
@@ -242,6 +260,10 @@ register_command() {
         hidden="$metadata_value"
         [[ $metadata_value == "true" ]] || metadata_errors=$(append_pipe_value "$metadata_errors" "hidden must be omitted or true")
         ;;
+      requires)
+        requires="$metadata_value"
+        [[ $metadata_value == "desktop" ]] || metadata_errors=$(append_pipe_value "$metadata_errors" "requires must be omitted or desktop")
+        ;;
       *)
         ;;
       esac
@@ -283,6 +305,10 @@ register_command() {
 
   [[ $requires_sudo == "true" ]] || requires_sudo="false"
   [[ $hidden == "true" ]] || hidden="false"
+  if [[ -n ${DESKTOP_GROUPS[$group]} || -n ${DESKTOP_GROUPS[$fallback_group]} ]]; then
+    requires="desktop"
+  fi
+  [[ $requires == "desktop" ]] || requires=""
 
   local key="$file_binary"
   COMMAND_KEYS+=("$key")
@@ -297,6 +323,7 @@ register_command() {
   COMMAND_EXAMPLES["$key"]="$examples"
   COMMAND_REQUIRES_SUDO["$key"]="$requires_sudo"
   COMMAND_HIDDEN["$key"]="$hidden"
+  COMMAND_REQUIRES["$key"]="$requires"
   COMMAND_HAS_SUMMARY["$key"]="$has_summary"
   COMMAND_METADATA_ERRORS["$key"]="$metadata_errors"
 
@@ -322,7 +349,7 @@ reset_commands() {
   ROUTE_COLLISIONS=()
   COMMAND_ROUTE=() COMMAND_FALLBACK_ROUTE=() COMMAND_BINARY=() COMMAND_GROUP=() COMMAND_NAME=()
   COMMAND_SUMMARY=() COMMAND_USAGE=() COMMAND_ARGS=() COMMAND_EXAMPLES=() COMMAND_REQUIRES_SUDO=()
-  COMMAND_HIDDEN=() COMMAND_ALIASES=() COMMAND_HAS_SUMMARY=() COMMAND_METADATA_ERRORS=()
+  COMMAND_HIDDEN=() COMMAND_REQUIRES=() COMMAND_ALIASES=() COMMAND_HAS_SUMMARY=() COMMAND_METADATA_ERRORS=()
   ROUTE_TO_KEY=() ROUTE_IS_ALIAS=() BINARY_TO_KEY=()
 }
 
@@ -481,14 +508,35 @@ resolve_direct_route() {
   return 1
 }
 
+command_unavailable() {
+  [[ $EDITION == "server" && ${COMMAND_REQUIRES[$1]} == "desktop" ]]
+}
+
+# Hidden commands, and on Omarchy Server the ones that need the desktop, are
+# listed only with --all.
+command_listed() {
+  local key="$1"
+  local include_all="$2"
+
+  [[ $include_all == "true" ]] || { [[ ${COMMAND_HIDDEN[$key]} != "true" ]] && ! command_unavailable "$key"; }
+}
+
+refuse_unavailable() {
+  local key="$1"
+
+  if command_unavailable "$key"; then
+    echo "${COMMAND_ROUTE[$key]} needs the Omarchy desktop, which Omarchy Server does not have" >&2
+  else
+    return 1
+  fi
+}
+
 sorted_keys() {
   local include_all="$1"
   local key=""
 
   for key in "${COMMAND_KEYS[@]}"; do
-    if [[ $include_all != "true" && ${COMMAND_HIDDEN[$key]} == "true" ]]; then
-      continue
-    fi
+    command_listed "$key" "$include_all" || continue
     printf '%s\t%s\n' "${COMMAND_ROUTE[$key]}" "$key"
   done | sort -u | cut -f2-
 }
@@ -532,9 +580,7 @@ sorted_group_keys() {
   local route=""
 
   for key in "${COMMAND_KEYS[@]}"; do
-    if [[ $include_all != "true" && ${COMMAND_HIDDEN[$key]} == "true" ]]; then
-      continue
-    fi
+    command_listed "$key" "$include_all" || continue
 
     fallback_group=$(fallback_group_for_key "$key")
     if [[ ${COMMAND_GROUP[$key]} != "$group" && $fallback_group != "$group" ]]; then
@@ -581,6 +627,7 @@ show_group_list() {
 
   printf '%s\n' "${!GROUP_DESCRIPTIONS[@]}" | sort | while IFS= read -r sorted_group; do
     [[ -n $sorted_group ]] || continue
+    [[ $EDITION == "server" && -n ${DESKTOP_GROUPS[$sorted_group]} ]] && continue
     printf '  %-14s %s\n' "$sorted_group" "${GROUP_DESCRIPTIONS[$sorted_group]}"
   done
 }
@@ -597,10 +644,16 @@ Usage:
 
 Common commands:
   omarchy update              Update Omarchy and system packages
+EOF
+  if [[ $EDITION != "server" ]]; then
+    cat <<'EOF'
   omarchy theme list          List available themes
   omarchy theme set <name>    Apply a theme
   omarchy font list           List available fonts
   omarchy screenshot          Take a screenshot
+EOF
+  fi
+  cat <<'EOF'
   omarchy-debug               Print debugging information
 
 Groups:
@@ -680,9 +733,7 @@ show_commands() {
 
   for route in "${!ROUTE_IS_ALIAS[@]}"; do
     key="${ROUTE_TO_KEY[$route]}"
-    if [[ $include_all != "true" && ${COMMAND_HIDDEN[$key]} == "true" ]]; then
-      continue
-    fi
+    command_listed "$key" "$include_all" || continue
     alias_rows+="$route"$'\t'"${COMMAND_ROUTE[$key]}"$'\n'
   done
 
@@ -717,8 +768,11 @@ show_commands_markdown() {
 
 emit_command_record() {
   local key="$1"
+  local available="true"
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  command_unavailable "$key" && available="false"
+
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "${COMMAND_ROUTE[$key]}" \
     "${COMMAND_BINARY[$key]}" \
     "${COMMAND_GROUP[$key]}" \
@@ -730,7 +784,8 @@ emit_command_record() {
     "${COMMAND_EXAMPLES[$key]}" \
     "${COMMAND_ALIASES[$key]}" \
     "${COMMAND_FALLBACK_ROUTE[$key]}" \
-    "${COMMAND_USAGE[$key]}"
+    "${COMMAND_USAGE[$key]}" \
+    "$available"
 }
 
 emit_command_records() {
@@ -758,7 +813,7 @@ commands_json_filter() {
   aliases: (.[9] | split("|") | map(gsub("^ +| +$"; "")) | map(select(length > 0))),
   filename_route: .[10],
   routes: ([.[0], .[10]] + (.[9] | split("|") | map(gsub("^ +| +$"; "")) | map(select(length > 0))) | unique)
-}] | {ok: true, commands: .}
+} + (if .[12] == "false" then {available: false} else {} end)] | {ok: true, commands: .}
 EOF
 }
 
@@ -1060,6 +1115,17 @@ dispatch_fast_or_help() {
       return 0
     fi
 
+    # Only Omarchy Server reads the header here; the desktop keeps the
+    # filename probe free of metadata.
+    if [[ $EDITION == "server" ]]; then
+      reset_commands
+      load_command_by_binary "$DIRECT_RESOLVED_BINARY"
+      if refuse_unavailable "${BINARY_TO_KEY[$DIRECT_RESOLVED_BINARY]}"; then
+        return 1
+      fi
+      reset_commands
+    fi
+
     if (( ${#remaining[@]} == 0 )); then
       load_command_by_binary "$DIRECT_RESOLVED_BINARY"
       key="${BINARY_TO_KEY[$DIRECT_RESOLVED_BINARY]}"
@@ -1122,6 +1188,10 @@ dispatch_or_help() {
         show_command_help "$key"
       fi
       return 0
+    fi
+
+    if refuse_unavailable "$key"; then
+      return 1
     fi
 
     binary_path="$OMARCHY_BIN_DIR/${COMMAND_BINARY[$key]}"

@@ -798,6 +798,48 @@ assert_output_contains "partial metadata command dispatches" "$output" "partial-
 output=$("$TMPDIR/omarchy" body metadata test)
 assert_output_contains "body metadata command dispatches by filename" "$output" "body-metadata-ok"
 
+# Omarchy Server has no desktop session. A command in a desktop group, or one
+# tagged requires=desktop, runs as ever on the desktop; on the server it leaves
+# the listings and is refused, whether reached by filename or by alias.
+printf '#!/bin/bash\n\n# omarchy:summary=In a desktop group\necho theme-ok\n' >"$TMPDIR/omarchy-theme-probe"
+{
+  printf '#!/bin/bash\n\n'
+  printf '# omarchy:summary=Needs the desktop in a group that does not\n'
+  printf '# omarchy:alias=omarchy deskalias\n'
+  printf '# omarchy:requires=desktop\n'
+  printf 'echo tagged-ok\n'
+} >"$TMPDIR/omarchy-weird-desktop"
+chmod +x "$TMPDIR/omarchy-theme-probe" "$TMPDIR/omarchy-weird-desktop"
+
+output=$("$TMPDIR/omarchy" theme probe)$("$TMPDIR/omarchy" deskalias)
+assert_output_contains "desktop-only commands run on the desktop" "$output" "theme-oktagged-ok"
+
+"$TMPDIR/omarchy" commands --all --json | jq -e 'all(.commands[]; has("available") | not)' >/dev/null
+pass "desktop JSON carries no availability field"
+
+for route in "theme probe" "weird desktop" "deskalias"; do
+  if output=$(OMARCHY_EDITION=server "$TMPDIR/omarchy" $route 2>&1); then
+    fail "Omarchy Server refuses omarchy $route"
+  fi
+  assert_output_contains "Omarchy Server refuses omarchy $route" "$output" "needs the Omarchy desktop"
+done
+
+output=$(OMARCHY_EDITION=server "$TMPDIR/omarchy" commands)
+if [[ $output == *"theme probe"* || $output == *"desk"* || $output != *"omarchy weird test"* ]]; then
+  fail "Omarchy Server lists only the commands it can run"
+fi
+pass "Omarchy Server lists only the commands it can run"
+
+OMARCHY_EDITION=server "$TMPDIR/omarchy" commands --all --json |
+  jq -e '[.commands[] | select(.available == false) | .binary] == ["omarchy-theme-probe", "omarchy-weird-desktop"]' >/dev/null
+pass "Omarchy Server marks desktop-only commands in --all --json"
+
+output=$(OMARCHY_EDITION=server "$CLI" --help)
+if grep -Eq '^  (hyprland|theme) |omarchy theme list' <<<"$output"; then
+  fail "Omarchy Server main help leaves out desktop groups and commands"
+fi
+assert_output_contains "Omarchy Server main help keeps the groups that work there" "$output" "  pkg "
+
 # A trailing --help must render help even when the route only partially
 # resolves, leaving unresolved words ahead of the flag (e.g. `update aur --help`
 # used to start a real update because only the first leftover token was checked).

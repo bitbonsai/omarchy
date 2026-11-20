@@ -3,6 +3,7 @@
 # omarchy:summary=Toggle a full screen desktop: hide the top bar and remove the window gaps together
 # omarchy:args=[toggle|on|off]
 # omarchy:examples=omarchy toggle fullscreen desktop | omarchy toggle fullscreen desktop off | omarchy toggle fullscreen desktop on
+# omarchy:requires=desktop
 
 ACTION="${1:-toggle}"
 

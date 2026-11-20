@@ -16,8 +16,11 @@ Supported metadata keys:
 - `# omarchy:alias=...` / `# omarchy:aliases=...` - alternate routes
 - `# omarchy:hidden=true` - hide from default command listings
 - `# omarchy:requires-sudo=true` - mark commands that require sudo
+- `# omarchy:requires=desktop` - mark a command that needs the desktop session, in a group that otherwise works without one
 
 Only use `omarchy:examples` where there are args that need explaining.
+
+Omarchy Server has no desktop session (`omarchy-edition` prints `server` there), so the router hides desktop-only commands from its listings and refuses to run them. Whole groups are classified in `DESKTOP_GROUPS` in `bin/omarchy`: when adding a group to `GROUP_DESCRIPTIONS`, add it there too if every command in it needs Hyprland, the Omarchy shell or a display. Use `omarchy:requires=desktop` only for the exceptions in a mixed group such as `toggle`, `refresh` or `restart`. When unsure, leave a command available.
 
 Prefer explicit metadata for user-facing commands. Keep routes consistent with
 the filename unless there is a deliberate alias or compatibility route.

@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # omarchy:summary=Reload the Hyprland configuration, from inside or outside the session.
+# omarchy:requires=desktop
 
 # Outside the session (ssh, a remotely started herdr) there is no instance
 # signature, so reach the running Hyprland directly.

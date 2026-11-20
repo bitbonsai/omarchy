@@ -3,6 +3,7 @@
 # omarchy:summary=Toggle nightlight screen temperature
 # omarchy:args=[--status]
 # omarchy:examples=omarchy toggle nightlight
+# omarchy:requires=desktop
 
 ON_TEMP=4000
 OFF_TEMP=6500

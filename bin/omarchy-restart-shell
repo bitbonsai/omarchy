@@ -2,6 +2,7 @@
 
 # omarchy:summary=Restart the Omarchy shell
 # omarchy:examples=omarchy restart shell
+# omarchy:requires=desktop
 
 # A caller opened after dev link/unlink may disagree with the still-running
 # desktop. The user manager receives Hyprland's environment at session start.

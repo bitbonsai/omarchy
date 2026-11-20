@@ -101,6 +101,14 @@ but a listing entry would put install-time plumbing back in front of users
 group means adding its `GROUP_DESCRIPTIONS` entry; adding hidden plumbing
 means deliberately not doing so.
 
+## Editions
+
+Omarchy Server is the headless install: no Hyprland and no display. `/etc/omarchy/edition` holding `server` marks it; a missing file or any other content means desktop, and `OMARCHY_EDITION` overrides the file. `omarchy-edition` prints the answer, and the router reads the same two sources itself so that dispatch spawns nothing.
+
+A command needs the desktop when its metadata group or its filename group is in `DESKTOP_GROUPS` in `bin/omarchy`, or when its header says `# omarchy:requires=desktop`. On the desktop that changes nothing. On Omarchy Server such a command is left out of the top-level group list, group help, `omarchy commands` and its alias table unless `--all` is given, carries `"available": false` in JSON, and is refused with one line on stderr and exit code 1, by filename route and by alias alike. Its `--help` still renders. The filename probe reads the resolved command's header to decide, which only Omarchy Server pays for.
+
+The gate covers routes through `omarchy`. Scripts that call an `omarchy-*` binary directly are not stopped.
+
 ## Introspection
 
 `omarchy commands` prints every non-hidden command with its summary, plus an
@@ -118,6 +126,7 @@ on:
   in help but does not satisfy the check
 - invalid boolean metadata: `hidden` and `requires-sudo` must be `true` or
   omitted, never `false`
+- a `requires` value other than `desktop`
 - a registered command whose binary is missing or not executable
 
 When debugging a routing surprise, `omarchy <route> --help` shows the resolved

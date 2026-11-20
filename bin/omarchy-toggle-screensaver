@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # omarchy:summary=Toggle screensaver availability
+# omarchy:requires=desktop
 
 omarchy-toggle screensaver-off
 

@@ -4,6 +4,7 @@
 # omarchy:group=system
 # omarchy:name=lock
 # omarchy:examples=omarchy system lock
+# omarchy:requires=desktop
 
 omarchy-shell lock lock >/dev/null
 

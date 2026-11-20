@@ -9,7 +9,8 @@
 # package, or the checkout `omarchy dev link` points at, so agents read the
 # skills of the code they run. A link into another Omarchy tree is moved to
 # this one, or removed when this tree has no such skill. Links to skills from
-# anywhere else are the user's, and stay.
+# anywhere else are the user's, and stay. On Omarchy Server the omarchy skill
+# links to omarchy-server, which describes a machine without the desktop.
 
 set -euo pipefail
 
@@ -19,6 +20,8 @@ if [[ ! -d $skills ]]; then
   echo "No agent skills in $root" >&2
   exit 1
 fi
+
+edition=$("$(dirname "$(realpath "${BASH_SOURCE[0]}")")/omarchy-edition")
 
 dirs=(~/.agents/skills ~/.claude/skills ~/.codex/skills ~/.pi/agent/skills ~/.gemini/config/skills ~/.hermes/skills)
 for profile in ~/.hermes/profiles/*/; do
@@ -37,6 +40,11 @@ for dir in "${dirs[@]}"; do
   for skill in "$skills"/*/; do
     skill=${skill%/}
     link="$dir/${skill##*/}"
+    if [[ $skill == */omarchy-server ]]; then
+      continue
+    elif [[ $skill == */omarchy && $edition == "server" ]]; then
+      skill="$skills/omarchy-server"
+    fi
     # A folder or a link of the user's own by the same name wins.
     if [[ -e $link || -L $link ]] && ! [[ -L $link && $(readlink "$link") == */default/agents/skills/* ]]; then
       continue
