@@ -89,7 +89,8 @@ fi
 
 mapfile -t not_set_up < <(omarchy-server-setup-steps)
 
-echo "Omarchy Server $(omarchy-version 2>/dev/null)"
+version=$(omarchy-version 2>/dev/null)
+echo "Omarchy Server${version:+ $version}"
 printf -v row '%s  ' "${checks[@]}"
 echo "${row%  }"
 for problem in "${problems[@]}"; do

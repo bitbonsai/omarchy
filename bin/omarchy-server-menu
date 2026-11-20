@@ -35,7 +35,7 @@ pick() {
   shift
 
   fzf --ansi --layout=reverse --height=~100% --info=hidden --no-separator \
-    --delimiter=$'\t' --with-nth=1 --prompt="" --ghost="Go…" --pointer="▌" \
+    --delimiter=$'\t' --with-nth=1 --prompt="" --ghost="Go…" --pointer="▌" --gutter=" " \
     --footer="type to filter     ↵ $enter     esc back" "$@" |
     cut -f2
 }
@@ -156,6 +156,7 @@ network_menu() {
       row "" "Addresses" "" addresses
       row "" "Connections" "nmtui" connections
       row "" "Firewall" "" firewall
+      row "" "Cloudflare tunnel" "" tunnel
       if omarchy-cmd-present tailscale; then
         row "" "Tailscale" "" tailscale
       else
@@ -169,12 +170,27 @@ network_menu() {
       firewall) page sudo ufw status verbose ;;
       tailscale) page tailscale status ;;
       tailscale-install) omarchy-install-service-tailscale; pause ;;
+      tunnel) tunnel_setup; pause ;;
     esac
   done
 }
 
+# cloudflared is installed only for the owner who wants a tunnel.
+tunnel_setup() {
+  omarchy-pkg-add cloudflared || return
+  echo "Sign in to Cloudflare to create the tunnel."
+  cloudflared tunnel login
+}
+
+# omarchy backup owns storage and backups once it is installed.
 storage_menu() {
   local choice
+
+  if omarchy-cmd-present omarchy-backup; then
+    omarchy-backup
+    pause
+    return
+  fi
 
   while :; do
     choice=$({
@@ -183,18 +199,13 @@ storage_menu() {
       if omarchy-server-setup-steps | grep -qx storage; then
         row "" "No network storage here" "marks storage as set up" storage-done
       fi
-      if omarchy-cmd-present omarchy-backup; then
-        row "" "Backups" "" backups
-      else
-        row "" "Backups" "not available yet" backups-missing
-      fi
+      row "" "Backups" "not available yet" backups-missing
     } | pick open) || return
 
     case $choice in
       disks) page lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS ;;
       mounts) page findmnt -t nfs,nfs4,cifs,smb3,fuse.sshfs ;;
       storage-done) omarchy-done mark server-storage ;;
-      backups) omarchy-backup; pause ;;
       backups-missing) echo "Backups are not part of Omarchy Server yet."; pause ;;
     esac
   done
