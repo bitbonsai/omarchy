@@ -34,6 +34,8 @@ openssh
 pacman-contrib
 plocate
 podman
+# omarchy backup restores with it.
+restic
 ripgrep
 socat
 starship
