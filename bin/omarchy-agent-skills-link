@@ -42,6 +42,12 @@ for dir in "${dirs[@]}"; do
     link="$dir/${skill##*/}"
     if [[ $skill == */omarchy-server ]]; then
       continue
+    elif [[ $edition == "server" && ${skill##*/} =~ ^omarchy-make-(app|game|plugin|theme)$ ]]; then
+      # They make things for the desktop, which Omarchy Server does not have.
+      if [[ -L $link && $(readlink "$link") == */default/agents/skills/* ]]; then
+        rm "$link"
+      fi
+      continue
     elif [[ $skill == */omarchy && $edition == "server" ]]; then
       skill="$skills/omarchy-server"
     fi

@@ -2,11 +2,14 @@
 
 # omarchy:summary=Prompt for confirmation before starting an update
 
+lines=("• $(omarchy-i18n update.cannotStop)")
+# A server is plugged in.
+[[ $(omarchy-edition) == "server" ]] || lines+=("• $(omarchy-i18n update.connectPower)")
+
 gum style --border normal --padding "1 2" \
   "$(omarchy-i18n update.ready)" \
   "" \
-  "• $(omarchy-i18n update.cannotStop)" \
-  "• $(omarchy-i18n update.connectPower)" \
+  "${lines[@]}" \
   "" \
   "$(omarchy-i18n update.whatsNew "https://github.com/omacom/omarchy/releases/latest")"
 

@@ -68,6 +68,8 @@ pass "omarchy-agent-skills-link moves Omarchy's skill links to the tree in use a
 HOME="$test_tmp/relink" OMARCHY_EDITION=server "$ROOT/bin/omarchy-agent-skills-link" "$ROOT" || fail "omarchy-agent-skills-link links a checkout on Omarchy Server"
 [[ $(readlink "$test_tmp/relink/.claude/skills/omarchy") == "$ROOT/default/agents/skills/omarchy-server" && ! -e $test_tmp/relink/.claude/skills/omarchy-server ]] ||
   fail "on Omarchy Server the omarchy skill links to the server skill" "$(readlink "$test_tmp/relink/.claude/skills/omarchy")"
+[[ ! -e $test_tmp/relink/.agents/skills/omarchy-make-game && $(readlink "$test_tmp/relink/.claude/skills/omarchy-make-game") == "/opt/elsewhere/game" ]] ||
+  fail "on Omarchy Server the desktop authoring skills are unlinked and the user's own stay"
 pass "omarchy-agent-skills-link gives Omarchy Server its own omarchy skill"
 
 # The Agent Skills spec caps a description at 1024 characters, and harnesses
