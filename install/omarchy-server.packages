@@ -1,0 +1,55 @@
+# Omarchy Server package list: the headless edition, reached over SSH. The ISO
+# pacstraps it in place of omarchy-base.packages when the edition is server,
+# and omarchy-pkg-defaults prints it on a machine whose /etc/omarchy/edition
+# says server. It is the CLI half of the base list, with no compositor, shell,
+# desktop apps, audio, printing or fonts beyond the console.
+
+base-devel
+bash-completion
+bat
+btop
+crun
+dosfstools
+exfatprogs
+expac
+eza
+fastfetch
+fd
+fzf
+git
+gum
+herdr
+inetutils
+inxi
+jq
+kernel-modules-hook
+lazygit
+less
+man-db
+mise-bin
+networkmanager
+nvim
+omarchy-nvim
+openssh
+pacman-contrib
+plocate
+podman
+ripgrep
+socat
+starship
+tailscale
+terminus-font
+tldr
+tmux
+tree-sitter-cli
+ufw
+unzip
+usage
+vi
+whois
+wireless-regdb
+yay
+zoxide
+# omarchy-settings configures swap on zram. The x86_64 installer adds this
+# package already; every aarch64 platform needs it from here.
+zram-generator

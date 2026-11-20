@@ -29,12 +29,19 @@ case $platform in
     ;;
 esac
 
+# Omarchy Server replaces the base list and the aarch64 additions with its own
+# list, which carries zram-generator and leaves out the desktop audio. A
+# platform's own list is hardware and stays.
+if [[ $(omarchy-edition) == "server" ]]; then
+  lists=(server "${lists[@]:2}")
+fi
+
 # The base list always exists. An architecture or platform with nothing to add
 # has no list of its own.
 files=()
 for list in "${lists[@]}"; do
   file="$OMARCHY_PATH/install/omarchy-$list.packages"
-  if [[ $list == "base" || -f $file ]]; then
+  if [[ $list == "base" || $list == "server" || -f $file ]]; then
     files+=("$file")
   fi
 done
