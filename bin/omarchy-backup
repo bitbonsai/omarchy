@@ -334,6 +334,7 @@ inventory_podman() {
       found "Container $container, run by a user unit"
     else
       skipped "⚠ Container $container was started by hand. Its volumes are saved; recreate it after the restore"
+      echo "$container" >>"$MANIFEST_BUILD/hand-made"
     fi
     while IFS= read -r source; do
       [[ -n $source ]] && binds+=("$source")
@@ -517,6 +518,7 @@ create_backup() {
   MANIFEST_BUILD=$(mktemp -d)
   trap 'rm -rf -- "$MANIFEST_BUILD"' EXIT
   : >"$MANIFEST_BUILD/system-units"
+  : >"$MANIFEST_BUILD/hand-made"
 
   echo "Looking at what $OWNER runs (uid $OWNER_UID, gid $OWNER_GID)..."
   inventory_owner
@@ -847,7 +849,7 @@ restore_user_units() {
 }
 
 restore_backup() {
-  local old_user old_uid old_gid
+  local old_user old_uid old_gid name
   if [[ ! -f $REPO/config ]]; then
     echo "$REPO is not a restic repository." >&2
     exit 1
@@ -897,6 +899,10 @@ restore_backup() {
   restore_system_units
   restore_images
   restore_user_units
+
+  while IFS= read -r name; do
+    [[ -n $name ]] && failed "Container $name was started by hand, so it needs recreating. Its settings: sudo restic -r $REPO dump latest $MANIFEST/containers.json"
+  done < <(cat "$M/hand-made" 2>/dev/null)
 
   echo
   echo "Came back"
