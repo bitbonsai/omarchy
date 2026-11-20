@@ -115,4 +115,4 @@ You are most likely working through SSH yourself. Ask before restarting or disab
 
 **Ask before publishing any port or tunnel.** That covers a `ufw allow` rule, a container port bound to anything other than `127.0.0.1`, `tailscale serve`, `tailscale funnel`, a reverse SSH tunnel and a port forward on the router. Say what would become reachable and from where, then wait for a yes. Bind new services to `127.0.0.1` until then.
 
-**Use `sudo` for privileged commands.** An SSH session is a terminal, so the password prompt works there. This machine has no graphical prompt to fall back on: when no terminal is available to enter a password, ask the user to run the command. Leave `sudo` off commands that ask for it themselves, such as `omarchy update`.
+**Use `sudo` for privileged commands.** The owner has no password and `sudo` asks for none, so your own permission rules decide when you run one. Before a privileged command, say what it changes. Leave `sudo` off commands that ask for it themselves, such as `omarchy update`.
