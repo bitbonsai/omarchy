@@ -5,6 +5,7 @@
 # omarchy:name=file
 # omarchy:args=label paths formats [menu args...]
 # omarchy:examples=omarchy menu file "Select image" "$HOME/Pictures" "jpg png webp"|omarchy-menu-file "Select media" "$HOME/Pictures:$HOME/Videos" "jpg png mp4 mov" --width 800
+# omarchy:requires=desktop
 
 set -euo pipefail
 

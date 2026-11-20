@@ -2,6 +2,7 @@
 
 # omarchy:summary=Display annotated Tmux keybindings using an interactive search menu.
 # omarchy:args=[--print|-p] [--config <path>]
+# omarchy:requires=desktop
 
 print_only=false
 config_file="${TMUX_CONF:-$HOME/.config/tmux/tmux.conf}"

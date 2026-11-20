@@ -4,6 +4,7 @@
 # omarchy:group=menu
 # omarchy:args=<emoji>
 # omarchy:hidden=true
+# omarchy:requires=desktop
 
 emoji="${1:-}"
 copy_pid=""

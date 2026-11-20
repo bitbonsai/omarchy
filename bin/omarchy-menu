@@ -9,6 +9,12 @@
 
 set -euo pipefail
 
+# Omarchy Server has no shell to draw the menu in, so it gets a list in the
+# terminal instead.
+if [[ $(omarchy-edition) == "server" ]]; then
+  exec omarchy-server-menu
+fi
+
 verb="${1-toggle}"
 route="${2-root}"
 

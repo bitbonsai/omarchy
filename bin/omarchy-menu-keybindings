@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # omarchy:summary=Display Hyprland keybindings defined in your configuration using an interactive search menu.
+# omarchy:requires=desktop
 
 # `hyprctl binds` cannot say what a Lua bind runs: Hyprland 0.56 reports it as
 # dispatcher __lua, 0.57 as HL.Dispatcher(<name>) or function: 0x... with a

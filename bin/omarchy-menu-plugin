@@ -4,6 +4,7 @@
 # omarchy:group=menu
 # omarchy:name=plugin
 # omarchy:args=<enable|disable|clone|remove>
+# omarchy:requires=desktop
 
 set -euo pipefail
 

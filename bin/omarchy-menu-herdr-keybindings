@@ -2,6 +2,7 @@
 
 # omarchy:summary=Display annotated Herdr keybindings using an interactive search menu.
 # omarchy:args=[--print|-p] [--config <path>]
+# omarchy:requires=desktop
 
 print_only=false
 config_file="${HERDR_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml}"

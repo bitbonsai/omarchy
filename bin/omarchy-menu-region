@@ -3,6 +3,7 @@
 # omarchy:summary=Pick how dates, times, numbers and units are written
 # omarchy:group=menu
 # omarchy:name=region
+# omarchy:requires=desktop
 
 set -euo pipefail
 

@@ -5,6 +5,7 @@
 # omarchy:name=input
 # omarchy:args=prompt [menu args...]
 # omarchy:examples=omarchy menu input Reminder|omarchy-menu-input "Reminder in minutes" --width 400
+# omarchy:requires=desktop
 
 set -euo pipefail
 

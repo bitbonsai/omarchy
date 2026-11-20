@@ -2,6 +2,7 @@
 
 # omarchy:summary=Open a generic image selector menu
 # omarchy:args=[--selected <image>] [--print-name] [--show-labels] [--filterable] [--lazy-thumbnails] [--preload] [--prepare-only] [--cache-only] [--print-rows] <image-dir>...
+# omarchy:requires=desktop
 
 selected_image=""
 print_name=false

@@ -3,6 +3,7 @@
 # omarchy:summary=Select and set the system timezone
 # omarchy:group=menu
 # omarchy:name=timezone
+# omarchy:requires=desktop
 
 set -e
 

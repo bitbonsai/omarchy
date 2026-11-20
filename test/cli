@@ -834,6 +834,13 @@ OMARCHY_EDITION=server "$TMPDIR/omarchy" commands --all --json |
   jq -e '[.commands[] | select(.available == false) | .binary] == ["omarchy-theme-probe", "omarchy-weird-desktop"]' >/dev/null
 pass "Omarchy Server marks desktop-only commands in --all --json"
 
+# omarchy menu opens the terminal menu on Omarchy Server; the menu's other
+# commands draw in the desktop shell and stay refused.
+OMARCHY_EDITION=server "$CLI" commands --all --json |
+  jq -e '[.commands[] | select(.group == "menu" and .available != false) | .binary] == ["omarchy-menu"]' >/dev/null ||
+  fail "Omarchy Server runs omarchy menu and refuses the desktop menu commands"
+pass "Omarchy Server runs omarchy menu and refuses the desktop menu commands"
+
 output=$(OMARCHY_EDITION=server "$CLI" --help)
 if grep -Eq '^  (hyprland|theme) |omarchy theme list' <<<"$output"; then
   fail "Omarchy Server main help leaves out desktop groups and commands"

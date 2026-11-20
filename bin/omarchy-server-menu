@@ -1,0 +1,259 @@
+#!/bin/bash
+
+# omarchy:summary=Open the Omarchy Server menu, a type-to-filter list in the terminal
+# omarchy:hidden=true
+
+# omarchy menu runs this on Omarchy Server. A row opens a list of its own or
+# runs a tool in this terminal, and Esc goes back. Icons show only in terminals
+# known to draw Nerd Font symbols: Ghostty and kitty carry them, and Omarchy
+# sets up foot and Alacritty with a Nerd Font.
+
+set -uo pipefail
+
+case ${TERM:-} in
+  xterm-ghostty | xterm-kitty | alacritty | foot*) icons=1 ;;
+  *) icons=0 ;;
+esac
+
+dim=$'\e[2m' reset=$'\e[0m'
+
+# A row is "<shown>\t<key>": the label, then its hint dimmed in a column.
+row() {
+  local icon=$1 label=$2 hint=$3 key=$4
+
+  if (( icons )) && [[ -n $icon ]]; then
+    label="$icon  $label"
+  fi
+  # printf pads by bytes, and icons are several, so pad by characters.
+  printf '%s%*s%s\t%s\n' "$label" $(( 30 - ${#label} )) "" "${hint:+$dim$hint$reset}" "$key"
+}
+
+# Prints the chosen row's key, after the key pressed when --expect is passed.
+# Fails on Esc. The first argument names what Enter does.
+pick() {
+  local enter=$1
+  shift
+
+  fzf --ansi --layout=reverse --height=~100% --info=hidden --no-separator \
+    --delimiter=$'\t' --with-nth=1 --prompt="" --ghost="Go…" --pointer="▌" \
+    --footer="type to filter     ↵ $enter     esc back" "$@" |
+    cut -f2
+}
+
+pause() {
+  echo
+  read -rsn1 -p "Press any key to go back"
+  echo
+}
+
+page() {
+  "$@" 2>&1 | less -RFX
+}
+
+main_rows() {
+  local steps updates=${1:-} down
+
+  steps=$(omarchy-server-setup-steps | wc -l)
+  if (( steps == 1 )); then
+    row "" "Finish setup" "1 step left" setup
+  elif (( steps > 1 )); then
+    row "" "Finish setup" "$steps steps left" setup
+  fi
+
+  down=$(omarchy-server-update-watch down | wc -l)
+  if (( down )); then
+    row "" "Services" "$down down" services
+  else
+    row "" "Services" "›" services
+  fi
+  row "" "Network" "›" network
+  row "" "Storage and backups" "›" storage
+  row "󰚩" "Agent" "" agent
+  row "" "Updates" "$updates" updates
+  row "" "Fleet" "" fleet
+}
+
+# checkupdates syncs a copy of the package databases, which takes a while, so
+# the menu opens without the count and fills it in when it arrives.
+if [[ ${1:-} == "--rows-with-updates" ]]; then
+  count=$(timeout 30 checkupdates 2>/dev/null | wc -l)
+  if (( count )); then
+    main_rows "$count available"
+  else
+    main_rows
+  fi
+  exit 0
+fi
+
+setup_menu() {
+  local step choice
+
+  choice=$(
+    while read -r step; do
+      case $step in
+        storage) row "" "Storage" "network mounts" storage ;;
+        backups) row "" "Backups" "" backups ;;
+        agent) row "" "Agent" "choose a coding agent" agent ;;
+      esac
+    done < <(omarchy-server-setup-steps) | pick open
+  ) || return
+
+  case $choice in
+    storage | backups) storage_menu ;;
+    agent) agent_menu ;;
+  esac
+}
+
+services_menu() {
+  local choice kind unit
+
+  while :; do
+    choice=$(
+      {
+        while read -r kind unit; do
+          [[ $kind == "mount" ]] && continue
+          row "" "${unit%.service}" "down since the update" "$kind:$unit"
+        done < <(omarchy-server-update-watch down)
+        systemctl --user list-units --type=service --state=running,failed --no-legend --plain |
+          while read -r unit _ _ state _; do row "" "${unit%.service}" "$state, user" "user:$unit"; done
+        systemctl list-units --type=service --state=running,failed --no-legend --plain |
+          while read -r unit _ _ state _; do row "" "${unit%.service}" "$state" "system:$unit"; done
+      } | pick open
+    ) || return
+
+    unit_menu "${choice%%:*}" "${choice#*:}"
+  done
+}
+
+unit_menu() {
+  local scope=$1 unit=$2 choice
+  local systemctl=(systemctl) restart=(sudo systemctl) journal=(journalctl)
+
+  if [[ $scope == "user" ]]; then
+    systemctl+=(--user)
+    restart=(systemctl --user)
+    journal+=(--user)
+  fi
+
+  choice=$({
+    row "" "Status" "" status
+    row "" "Logs" "" logs
+    row "" "Restart" "" restart
+  } | pick open) || return
+
+  case $choice in
+    status) page "${systemctl[@]}" status "$unit" ;;
+    logs) "${journal[@]}" -u "$unit" -e ;;
+    restart) "${restart[@]}" restart "$unit"; pause ;;
+  esac
+}
+
+network_menu() {
+  local choice
+
+  while :; do
+    choice=$({
+      row "" "Addresses" "" addresses
+      row "" "Connections" "nmtui" connections
+      row "" "Firewall" "" firewall
+      if omarchy-cmd-present tailscale; then
+        row "" "Tailscale" "" tailscale
+      else
+        row "" "Set up Tailscale" "" tailscale-install
+      fi
+    } | pick open) || return
+
+    case $choice in
+      addresses) page ip -brief address ;;
+      connections) nmtui ;;
+      firewall) page sudo ufw status verbose ;;
+      tailscale) page tailscale status ;;
+      tailscale-install) omarchy-install-service-tailscale; pause ;;
+    esac
+  done
+}
+
+storage_menu() {
+  local choice
+
+  while :; do
+    choice=$({
+      row "" "Disks" "" disks
+      row "" "Network mounts" "" mounts
+      if omarchy-server-setup-steps | grep -qx storage; then
+        row "" "No network storage here" "marks storage as set up" storage-done
+      fi
+      if omarchy-cmd-present omarchy-backup; then
+        row "" "Backups" "" backups
+      else
+        row "" "Backups" "not available yet" backups-missing
+      fi
+    } | pick open) || return
+
+    case $choice in
+      disks) page lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS ;;
+      mounts) page findmnt -t nfs,nfs4,cifs,smb3,fuse.sshfs ;;
+      storage-done) omarchy-done mark server-storage ;;
+      backups) omarchy-backup; pause ;;
+      backups-missing) echo "Backups are not part of Omarchy Server yet."; pause ;;
+    esac
+  done
+}
+
+agent_menu() {
+  local agent
+
+  agent=$(omarchy-default-agent)
+  if [[ -z $agent ]] || omarchy-cmd-missing "$agent"; then
+    # The harnesses omarchy default agent takes, as its metadata lists them.
+    agent=$(
+      sed -n 's/^# omarchy:args=\[\(.*\)\]$/\1/p' "$(command -v omarchy-default-agent)" | tr '|' '\n' |
+        while read -r name; do row "" "$name" "" "$name"; done | pick choose
+    ) || return
+    omarchy-default-agent --install "$agent" || { pause; return; }
+  fi
+
+  omarchy-agent --inline
+}
+
+fleet_menu() {
+  local choice key host
+
+  if omarchy-cmd-missing tailscale || ! tailscale status >/dev/null 2>&1; then
+    echo "Fleet lists your other machines on Tailscale, which is not connected here."
+    pause
+    return
+  fi
+
+  choice=$(
+    tailscale status --json |
+      jq -r '.Peer // {} | .[] | [(.DNSName | split(".")[0]), (if .Online then "online" else "offline" end)] | @tsv' |
+      while IFS=$'\t' read -r host state; do row "" "$host" "$state" "$host"; done |
+      pick "shell     ctrl-a agent" --expect=ctrl-a
+  ) || return
+
+  key=$(head -1 <<<"$choice")
+  host=$(tail -1 <<<"$choice")
+  [[ -n $host && $host != "$key" ]] || return
+
+  if [[ $key == "ctrl-a" ]]; then
+    ssh -t "$host" omarchy agent --inline
+  else
+    ssh "$host"
+  fi
+}
+
+printf -v reload 'start:reload-sync:%q --rows-with-updates' "$0"
+while :; do
+  choice=$(main_rows | pick open --bind "$reload") || exit 0
+
+  case $choice in
+    setup) setup_menu ;;
+    services) services_menu ;;
+    network) network_menu ;;
+    storage) storage_menu ;;
+    agent) agent_menu ;;
+    updates) omarchy-update; pause ;;
+    fleet) fleet_menu ;;
+  esac
+done
