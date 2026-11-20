@@ -106,8 +106,9 @@ GROUP_DESCRIPTIONS[windows]="Windows VM management"
 # Groups that need the desktop session. Omarchy Server has none, so there they
 # are left out of listings and refuse to run. A command in any other group
 # opts in with `# omarchy:requires=desktop`.
-for group in bar branding brightness capture clipboard crash dictation display dock file font games \
-  hyprland icons launch monitor notification osd plugin reminder shell theme tui voxtype webapp; do
+for group in audio bar bluetooth branding brightness capture clipboard crash dictation display dock file font games \
+  hibernation hyprland icons launch monitor notification osd plugin plymouth reminder shell theme tui voxtype \
+  weather webapp windows; do
   DESKTOP_GROUPS[$group]=1
 done
 unset group
