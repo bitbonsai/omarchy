@@ -1,0 +1,96 @@
+#!/bin/bash
+
+# omarchy:summary=Record what runs before an update, and after the next boot list what is down
+# omarchy:args=<record|compare|down>
+# omarchy:hidden=true
+
+# omarchy update runs record on Omarchy Server once the update is confirmed:
+# sshd, tailscaled, network mounts and the owner's container units that are
+# up then. After the next boot, compare checks each one again and keeps those
+# still down, and down prints the ones that remain down now, one per line.
+# The login status lines call compare and down.
+
+set -euo pipefail
+
+state_dir="$HOME/.local/state/omarchy/server"
+before="$state_dir/update-before"
+down_list="$state_dir/update-down"
+
+# The override is for tests, which cannot reboot.
+boot_id() {
+  cat "${OMARCHY_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}"
+}
+
+# Each item is "<kind> <name>": system and user units by unit name, mounts by
+# their target as findmnt escapes it, so a space stays one word.
+running_items() {
+  local unit
+
+  for unit in sshd.service tailscaled.service; do
+    if systemctl is-active --quiet "$unit"; then
+      echo "system $unit"
+    fi
+  done
+
+  findmnt -rn -t nfs,nfs4,cifs,smb3,fuse.sshfs -o TARGET | sed 's/^/mount /' || true
+
+  # Quadlet units name their source file; podman generate systemd names them
+  # container-* and pod-*.
+  systemctl --user show --property=Id,SourcePath \
+    $(systemctl --user list-units --type=service --state=running --no-legend --plain | awk '{ print $1 }') 2>/dev/null |
+    awk -F= '
+      $1 == "Id" { id = $2 }
+      $1 == "SourcePath" && ($2 ~ /\.(container|pod|kube)$/ || id ~ /^(container|pod)-/) { print "user " id }
+      $1 == "" { id = "" }' || true
+}
+
+item_up() {
+  local kind=$1 name=$2
+
+  case $kind in
+    system) systemctl is-active --quiet "$name" ;;
+    user) systemctl --user is-active --quiet "$name" ;;
+    mount) findmnt -rn -M "$(printf '%b' "$name")" >/dev/null ;;
+    *) return 1 ;;
+  esac
+}
+
+case ${1:-} in
+  record)
+    mkdir -p "$state_dir"
+    { echo "boot $(boot_id)"; running_items; } >"$before.tmp"
+    mv "$before.tmp" "$before"
+    rm -f "$down_list"
+    ;;
+  compare)
+    [[ -f $before ]] || exit 0
+    read -r _ recorded_boot <"$before"
+    # The update's own boot: what it stopped may start again on the reboot.
+    [[ $recorded_boot != "$(boot_id)" ]] || exit 0
+
+    : >"$down_list.tmp"
+    while read -r kind name; do
+      [[ $kind == "boot" ]] && continue
+      item_up "$kind" "$name" || echo "$kind $name" >>"$down_list.tmp"
+    done <"$before"
+    mv "$down_list.tmp" "$down_list"
+    rm -f "$before"
+    ;;
+  down)
+    [[ -f $down_list ]] || exit 0
+    still_down=()
+    while read -r kind name; do
+      item_up "$kind" "$name" || still_down+=("$kind $name")
+    done <"$down_list"
+
+    if (( ${#still_down[@]} == 0 )); then
+      rm -f "$down_list"
+    else
+      printf '%s\n' "${still_down[@]}"
+    fi
+    ;;
+  *)
+    echo "Usage: omarchy-server-update-watch <record|compare|down>" >&2
+    exit 1
+    ;;
+esac

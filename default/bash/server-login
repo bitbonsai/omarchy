@@ -1,0 +1,11 @@
+# Sourced by /etc/profile.d/omarchy.sh in login shells, so it stays POSIX sh.
+# On Omarchy Server a person logging in at a terminal, over SSH or on the
+# console, sees the status lines before the prompt. Commands over SSH, scp,
+# sftp, root shells and the login shells tmux opens in its panes stay quiet.
+case $- in
+  *i*)
+    if [ -t 1 ] && [ -z "${TMUX:-}" ] && [ "$(id -u)" != 0 ] && [ "$(omarchy-edition)" = "server" ]; then
+      omarchy-server-status
+    fi
+    ;;
+esac

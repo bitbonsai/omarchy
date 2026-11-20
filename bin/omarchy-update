@@ -88,6 +88,13 @@ omarchy-update-requires-free-space
 if [[ ${1:-} == "-y" ]] || omarchy-update-confirm; then
   authorize_update
 
+  # Omarchy Server says at the next login what ran before the update and is
+  # down after it. Not knowing is no reason to stop the update.
+  if [[ $(omarchy-edition) == "server" ]]; then
+    omarchy-server-update-watch record ||
+      echo -e "\e[33mCould not record what runs before the update.\e[0m" >&2
+  fi
+
   # Before the snapshot: the cache is on the snapshotted subvolume, so pruning
   # after it frees nothing until that snapshot ages out.
   omarchy-update-pkg-prune
