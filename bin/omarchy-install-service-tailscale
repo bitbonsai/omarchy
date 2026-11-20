@@ -13,11 +13,12 @@ sudo tailscale up --accept-routes
 echo -e "\nAllowing $USER to manage Tailscale..."
 sudo tailscale set --operator="$USER"
 
-echo -e "\nReceiving Taildrop files in $HOME/Downloads..."
-systemctl --user enable --now omarchy-tailscale-receive.service
-
-# Omarchy Server has no bar and no browser for the web app.
+# Omarchy Server has no Downloads folder to receive into, no bar and no
+# browser for the web app.
 if [[ $(omarchy-edition) != "server" ]]; then
+  echo -e "\nReceiving Taildrop files in $HOME/Downloads..."
+  systemctl --user enable --now omarchy-tailscale-receive.service
+
   echo -e "\nAdding Tailscale to the bar..."
   omarchy-plugin-enable omarchy.tailscale
 
