@@ -1,0 +1,927 @@
+#!/bin/bash
+
+# omarchy:summary=Back up container services to a restic repository and restore them on a new install
+# omarchy:args=<create|verify|restore> <repository> [--stop]
+# omarchy:examples=omarchy backup create /mnt/nas/omarchy-backup | omarchy backup create /mnt/nas/omarchy-backup --stop | omarchy backup verify /mnt/nas/omarchy-backup | omarchy backup restore /mnt/nas/omarchy-backup
+# omarchy:requires-sudo=true
+
+# Carries rootless Podman services across a clean install. create and verify run
+# on the old machine, which may be an older Omarchy Desktop or any Arch box
+# without this checkout, so this file uses nothing from Omarchy: copy it over
+# and run it with bash. It needs restic, and sudo for files only root can read.
+#
+# create saves, for the user who runs it: Podman volumes, the image list,
+# containers' bind-mounted directories, Podman secrets, Quadlet files, user
+# systemd units, the env and credential files those units reference, linger,
+# the user's /etc/subuid and /etc/subgid ranges with their UID and GID,
+# cloudflared, and network mounts from /etc/fstab and systemd mount units. A
+# manifest describing it all is saved alongside as /run/omarchy-backup.
+#
+# restore copies the latest snapshot into a root-only staging directory, then
+# puts each item back, asking before it replaces anything that differs.
+
+set -eo pipefail
+
+TAG="omarchy-backup"
+MANIFEST="/run/omarchy-backup"
+NETWORK_FSTYPES=" nfs nfs4 cifs smb3 smbfs sshfs fuse.sshfs davfs 9p glusterfs ceph "
+
+usage() {
+  echo "Usage: omarchy-backup <create|verify|restore> <repository> [--stop]" >&2
+  echo >&2
+  echo "  create   Save this user's container services to a restic repository," >&2
+  echo "           then read one file back to check the backup." >&2
+  echo "  verify   Check the repository and read one file back." >&2
+  echo "  restore  Put the latest backup back on this machine." >&2
+  echo >&2
+  echo "  --stop   With create: stop running containers for a consistent copy," >&2
+  echo "           and start them again afterwards." >&2
+  exit 1
+}
+
+ACTION="${1:-}"
+REPO="${2:-}"
+ARGS=("$@")
+STOP=0
+
+[[ $ACTION == "create" || $ACTION == "verify" || $ACTION == "restore" ]] || usage
+[[ -n $REPO && $REPO != -* ]] || usage
+for arg in "${@:3}"; do
+  if [[ $arg == "--stop" && $ACTION == "create" ]]; then
+    STOP=1
+  else
+    usage
+  fi
+done
+
+# Volumes, bind mounts and /etc hold files only root can read, so the work runs
+# as root on behalf of the user who called it.
+if (( EUID != 0 )); then
+  exec sudo -- /bin/bash "$(realpath -- "${BASH_SOURCE[0]}")" "${ARGS[@]}"
+fi
+
+OWNER="${SUDO_USER:-}"
+if [[ -z $OWNER || $OWNER == "root" ]]; then
+  echo "Run this as the user that owns the containers, not as root." >&2
+  exit 1
+fi
+
+if ! command -v restic >/dev/null; then
+  echo "restic is not installed. Install it with: sudo pacman -S restic" >&2
+  exit 1
+fi
+
+OWNER_UID=$(id -u -- "$OWNER")
+OWNER_GID=$(id -g -- "$OWNER")
+OWNER_HOME=$(getent passwd "$OWNER" | cut -d: -f6)
+REPO=$(realpath -m -- "$REPO")
+cd /
+
+as_owner() {
+  runuser -u "$OWNER" -- env HOME="$OWNER_HOME" XDG_RUNTIME_DIR="/run/user/$OWNER_UID" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$OWNER_UID/bus" "$@" </dev/null
+}
+
+PASSWORD=""
+# The password reaches restic through its environment only, never the command line.
+restic_run() {
+  RESTIC_PASSWORD="$PASSWORD" restic --repo "$REPO" "$@"
+}
+
+# Answers come from fd 3, the caller's stdin, because loops below read files on stdin.
+exec 3<&0
+
+confirm() {
+  local answer
+  read -r -u 3 -p "$1 [y/N] " answer || true
+  [[ $answer == [yY]* ]]
+}
+
+read_password() {
+  read -r -s -u 3 -p "Password for the restic repository: " PASSWORD || true
+  echo
+  if [[ -z $PASSWORD ]]; then
+    echo "No password given." >&2
+    exit 1
+  fi
+}
+
+shown() {
+  if [[ $1 == "$OWNER_HOME" || $1 == "$OWNER_HOME"/* ]]; then
+    echo "~${1#"$OWNER_HOME"}"
+  else
+    echo "$1"
+  fi
+}
+
+is_network_fs() {
+  [[ $NETWORK_FSTYPES == *" $1 "* ]]
+}
+
+# ---------------------------------------------------------------- verify
+
+verify_backup() {
+  local listing path candidate tmp
+
+  echo "Checking the repository structure..."
+  if ! restic_run check --quiet; then
+    echo "⚠ restic check found problems in $REPO. Do not wipe the old machine." >&2
+    return 1
+  fi
+
+  tmp=$(mktemp)
+  if ! restic_run dump latest --tag "$TAG" "$MANIFEST/owner" >"$tmp" || ! grep -q '^user=' "$tmp"; then
+    rm -f -- "$tmp"
+    echo "⚠ Could not read the manifest back from the latest backup." >&2
+    return 1
+  fi
+
+  # Prefer a small file that is still on this disk, so the copy can be compared
+  # byte for byte. Unit files change least, so they come first.
+  listing=$(restic_run ls --long latest --tag "$TAG" |
+    awk '$1 ~ /^-/ && $4 <= 65536 { sub(/^([^ ]+ +){6}/, ""); print }')
+  path=""
+  while IFS= read -r candidate; do
+    [[ -f $candidate && $candidate != "$MANIFEST"/* ]] || continue
+    if [[ -z $path || $candidate == */systemd/* ]]; then
+      path="$candidate"
+      [[ $candidate == */systemd/* ]] && break
+    fi
+  done <<<"$listing"
+
+  if [[ -z $path ]]; then
+    rm -f -- "$tmp"
+    echo "✓ The backup is readable. No file from it is on this disk to compare against."
+    return 0
+  fi
+
+  if restic_run dump latest --tag "$TAG" "$path" >"$tmp" && cmp -s -- "$tmp" "$path"; then
+    rm -f -- "$tmp"
+    echo "✓ Read $(shown "$path") back from the backup and it matches this disk."
+  else
+    rm -f -- "$tmp"
+    echo "⚠ $(shown "$path") read back from the backup differs from this disk." >&2
+    echo "  It may have changed since the backup. Run create again, then verify." >&2
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------- create
+
+FOUND=()
+SKIPPED=()
+ITEMS=()        # kind<TAB>path, saved to the manifest and backed up
+UNIT_FILES=()   # unit and Quadlet files, read for referenced files
+OUR_UNITS=()    # unit names those files produce
+
+found() { FOUND+=("✓ $1"); }
+skipped() { SKIPPED+=("$1"); }
+item() { ITEMS+=("$1"$'\t'"$2"); }
+
+human_size() {
+  du -sh -- "$1" 2>/dev/null | cut -f1
+}
+
+inventory_owner() {
+  local sub subg
+  sub=$(grep -E "^($OWNER|$OWNER_UID):" /etc/subuid 2>/dev/null || true)
+  subg=$(grep -E "^($OWNER|$OWNER_GID):" /etc/subgid 2>/dev/null || true)
+  if [[ -n $sub && -n $subg ]]; then
+    found "/etc/subuid and /etc/subgid ranges for $OWNER"
+  else
+    skipped "⚠ $OWNER has no range in /etc/subuid or /etc/subgid"
+  fi
+  printf '%s\n' "$sub" >"$MANIFEST_BUILD/subuid"
+  printf '%s\n' "$subg" >"$MANIFEST_BUILD/subgid"
+  printf 'user=%s\nuid=%s\ngid=%s\nhome=%s\nhost=%s\n' \
+    "$OWNER" "$OWNER_UID" "$OWNER_GID" "$OWNER_HOME" "$(cat /etc/hostname 2>/dev/null || uname -n)" >"$MANIFEST_BUILD/owner"
+
+  if [[ -e /var/lib/systemd/linger/$OWNER ]]; then
+    found "Linger on, so services start without a login"
+    echo yes >"$MANIFEST_BUILD/linger"
+  else
+    skipped "○ Linger off, services wait for a login"
+    echo no >"$MANIFEST_BUILD/linger"
+  fi
+}
+
+inventory_unit_files() {
+  local dir file name base
+  : >"$MANIFEST_BUILD/active-units"
+  : >"$MANIFEST_BUILD/enabled-units"
+
+  dir="$OWNER_HOME/.config/containers/systemd"
+  if [[ -d $dir ]]; then
+    item quadlets "$dir"
+    found "Quadlet files in $(shown "$dir")"
+    while IFS= read -r -d '' file; do
+      UNIT_FILES+=("$file")
+      name=${file##*/}
+      base=${name%.*}
+      case "$name" in
+      *.container | *.kube) OUR_UNITS+=("$base.service") ;;
+      *.pod | *.volume | *.network | *.build | *.image) OUR_UNITS+=("$base-${name##*.}.service") ;;
+      esac
+    done < <(find "$dir" -type f -print0)
+  fi
+
+  dir="$OWNER_HOME/.config/systemd/user"
+  if [[ -d $dir ]]; then
+    item units "$dir"
+    found "User units in $(shown "$dir")"
+    while IFS= read -r -d '' file; do
+      UNIT_FILES+=("$file")
+      OUR_UNITS+=("${file##*/}")
+    done < <(find "$dir" -maxdepth 1 -type f \( -name '*.service' -o -name '*.timer' -o -name '*.socket' -o -name '*.path' -o -name '*.target' \) -print0)
+  fi
+
+  if (( ${#OUR_UNITS[@]} > 0 )) && as_owner systemctl --user show-environment >/dev/null 2>&1; then
+    as_owner systemctl --user list-units --state=active --plain --no-legend | awk '{ print $1 }' |
+      grep -Fxf <(printf '%s\n' "${OUR_UNITS[@]}") >"$MANIFEST_BUILD/active-units" || true
+    as_owner systemctl --user list-unit-files --state=enabled --plain --no-legend | awk '{ print $1 }' |
+      grep -Fxf <(printf '%s\n' "${OUR_UNITS[@]}") >"$MANIFEST_BUILD/enabled-units" || true
+  elif (( ${#OUR_UNITS[@]} > 0 )); then
+    skipped "⚠ The user service manager is not reachable, so which units run is not recorded"
+  fi
+}
+
+# EnvironmentFile=, LoadCredential= and podman --env-file arguments in the unit
+# files, with %h and ~ expanded. Prints the unit file and the path, tab separated.
+referenced_files() {
+  local file line value
+  for file in "${UNIT_FILES[@]}"; do
+    while IFS= read -r line; do
+      case "$line" in
+      EnvironmentFile=*)
+        value=${line#EnvironmentFile=}
+        value=${value#-}
+        ;;
+      LoadCredential=*:* | LoadCredentialEncrypted=*:*) value=${line#*:} ;;
+      *--env-file*) value=$(sed -E 's/.*--env-file[= ]+("?)([^" ]+)\1.*/\2/' <<<"$line") ;;
+      *) continue ;;
+      esac
+      value=${value//%h/$OWNER_HOME}
+      value=${value/#\~/$OWNER_HOME}
+      echo "$file"$'\t'"$value"
+    done < <(grep -E '^[[:space:]]*(EnvironmentFile|LoadCredential|LoadCredentialEncrypted)=|--env-file' "$file" | sed -E 's/^[[:space:]]+//')
+  done
+}
+
+inventory_referenced_files() {
+  local unit path
+  while IFS=$'\t' read -r unit path; do
+    [[ -n $path ]] || continue
+    if [[ $path != /* ]]; then
+      skipped "⚠ ${unit##*/} references $path, a relative path that cannot be found"
+    elif [[ -f $path ]]; then
+      item env "$path"
+      found "Env file $(shown "$path"), used by ${unit##*/}"
+    else
+      skipped "⚠ ${unit##*/} references $(shown "$path"), which does not exist"
+    fi
+  done < <(referenced_files | sort -u)
+}
+
+inventory_podman() {
+  local name driver mountpoint options image container unit source fstype secrets network binds=()
+
+  if ! command -v podman >/dev/null; then
+    skipped "○ Podman is not installed"
+    : >"$MANIFEST_BUILD/volumes"
+    : >"$MANIFEST_BUILD/images"
+    echo "[]" >"$MANIFEST_BUILD/containers.json"
+    return
+  fi
+
+  : >"$MANIFEST_BUILD/volumes"
+  mkdir -p "$MANIFEST_BUILD/volume-labels"
+  while IFS= read -r name; do
+    [[ -n $name ]] || continue
+    IFS='|' read -r driver mountpoint options < <(as_owner podman volume inspect --format '{{.Driver}}|{{.Mountpoint}}|{{len .Options}}' "$name")
+    if [[ $driver != "local" ]]; then
+      skipped "○ Volume $name uses the $driver driver, its data lives elsewhere"
+    elif (( options > 0 )); then
+      skipped "○ Volume $name mounts storage from elsewhere through its options, recreate it by hand"
+    elif [[ -d $mountpoint ]]; then
+      item volume "$mountpoint"
+      printf '%s\t%s\n' "$name" "$mountpoint" >>"$MANIFEST_BUILD/volumes"
+      as_owner podman volume inspect --format '{{range $k, $v := .Labels}}{{$k}}={{$v}}{{println}}{{end}}' "$name" \
+        >"$MANIFEST_BUILD/volume-labels/$name"
+      found "Volume $name  $(human_size "$mountpoint")"
+    fi
+  done < <(as_owner podman volume ls --format '{{.Name}}')
+
+  : >"$MANIFEST_BUILD/images"
+  while IFS= read -r image; do
+    if [[ $image == "<none>:"* || $image == *":<none>" ]]; then
+      continue
+    elif [[ $image == localhost/* ]]; then
+      skipped "○ Image $image was built here, build it again after the restore"
+    else
+      echo "$image" >>"$MANIFEST_BUILD/images"
+      found "Image $image"
+    fi
+  done < <(as_owner podman images --format '{{.Repository}}:{{.Tag}}' | sort -u)
+
+  as_owner podman container inspect --all >"$MANIFEST_BUILD/containers.json" 2>/dev/null || echo "[]" >"$MANIFEST_BUILD/containers.json"
+
+  while IFS='|' read -r container unit; do
+    [[ -n $container ]] || continue
+    unit=$(container_unit "$container" "$unit")
+    if [[ -n $unit ]]; then
+      found "Container $container, run by $unit"
+    elif (( ${#UNIT_FILES[@]} > 0 )) && grep -qsw -- "$container" "${UNIT_FILES[@]}"; then
+      found "Container $container, run by a user unit"
+    else
+      skipped "⚠ Container $container was started by hand. Its volumes are saved; recreate it after the restore"
+    fi
+    while IFS= read -r source; do
+      [[ -n $source ]] && binds+=("$source")
+    done < <(as_owner podman container inspect --format '{{range .Mounts}}{{if eq .Type "bind"}}{{println .Source}}{{end}}{{end}}' "$container")
+  done < <(as_owner podman ps --all --format '{{.Names}}|{{.Label "PODMAN_SYSTEMD_UNIT"}}')
+
+  while IFS= read -r source; do
+    [[ -n $source ]] || continue
+    if [[ $source == /proc/* || $source == /sys/* || $source == /dev/* || $source == /run/* || $source == /tmp/* || $source == /var/run/* ]]; then
+      continue
+    elif [[ ! -e $source ]]; then
+      skipped "⚠ Bind mount $(shown "$source") does not exist"
+      continue
+    fi
+    fstype=$(findmnt -no FSTYPE -T "$source" 2>/dev/null || true)
+    if is_network_fs "$fstype"; then
+      skipped "○ Bind mount $(shown "$source") is on a $fstype share, so it stays there"
+    elif [[ ! -S $source ]]; then
+      item bind "$source"
+      found "Bind mount $(shown "$source")  $(human_size "$source")"
+    fi
+  done < <(printf '%s\n' "${binds[@]}" | sort -u)
+
+  secrets=$(as_owner podman secret ls --format '{{.Name}}' | paste -sd ' ' || true)
+  if [[ -n $secrets && -d $OWNER_HOME/.local/share/containers/storage/secrets ]]; then
+    item secrets "$OWNER_HOME/.local/share/containers/storage/secrets"
+    found "Podman secrets: $secrets"
+  fi
+
+  while IFS= read -r network; do
+    if [[ -n $network && $network != "podman" && $network != systemd-* ]]; then
+      skipped "○ Network $network is not saved, create it again with podman network create"
+    fi
+  done < <(as_owner podman network ls --format '{{.Name}}')
+}
+
+inventory_cloudflared() {
+  local path unit
+  for path in /etc/cloudflared "$OWNER_HOME/.cloudflared"; do
+    if [[ -d $path ]]; then
+      item cloudflared "$path"
+      found "cloudflared credentials and config in $(shown "$path")"
+    fi
+  done
+  for path in /etc/systemd/system/cloudflared*.service; do
+    [[ -f $path ]] || continue
+    unit=${path##*/}
+    item system-unit "$path"
+    printf '%s\t%s\n' "$unit" "$(systemctl is-enabled "$unit" 2>/dev/null || true)" >>"$MANIFEST_BUILD/system-units"
+    found "System unit $unit"
+  done
+}
+
+# credentials=, cred= and passwd_file= files named in mount options.
+credential_paths() {
+  tr ',' '\n' <<<"$1" | sed -nE 's/^(credentials|cred|passwd_file)=(.*)/\2/p'
+}
+
+inventory_credentials() {
+  local path
+  while IFS= read -r path; do
+    if [[ -f $path ]]; then
+      item credentials "$path"
+      found "Mount credentials $path"
+    fi
+  done < <(credential_paths "$1")
+}
+
+unit_value() {
+  sed -nE "s/^[[:space:]]*$2=[[:space:]]*//p" "$1" | tail -1
+}
+
+inventory_mounts() {
+  local spec mountpoint fstype options rest path unit mount_unit
+  : >"$MANIFEST_BUILD/fstab"
+  while read -r spec mountpoint fstype options rest; do
+    [[ -n $spec && $spec != \#* ]] || continue
+    is_network_fs "$fstype" || continue
+    printf '%s\t%s\t%s\t%s\t%s\n' "$spec" "$mountpoint" "$fstype" "$options" "${rest:-0 0}" >>"$MANIFEST_BUILD/fstab"
+    found "Network mount $mountpoint ($fstype) from /etc/fstab"
+    inventory_credentials "$options"
+  done </etc/fstab
+
+  for path in /etc/systemd/system/*.mount /etc/systemd/system/*.automount; do
+    [[ -f $path ]] || continue
+    unit=${path##*/}
+    mount_unit="$path"
+    if [[ $unit == *.automount ]]; then
+      mount_unit="/etc/systemd/system/${unit%.automount}.mount"
+      [[ -f $mount_unit ]] || continue
+    fi
+    fstype=$(unit_value "$mount_unit" Type)
+    is_network_fs "$fstype" || continue
+    item system-unit "$path"
+    printf '%s\t%s\n' "$unit" "$(systemctl is-enabled "$unit" 2>/dev/null || true)" >>"$MANIFEST_BUILD/system-units"
+    found "Network mount unit $unit ($fstype)"
+    [[ $unit == *.mount ]] && inventory_credentials "$(unit_value "$path" Options)"
+  done
+}
+
+# Drops items that sit inside another saved directory, so nothing is restored twice.
+dedupe_items() {
+  local entry path other keep kept=()
+  for entry in "${ITEMS[@]}"; do
+    path=${entry#*$'\t'}
+    keep=1
+    for other in "${ITEMS[@]}"; do
+      if [[ $path == "${other#*$'\t'}"/* ]]; then
+        keep=0
+        break
+      fi
+    done
+    (( keep )) && kept+=("$entry")
+  done
+  printf '%s\n' "${kept[@]}" | sort -u >"$MANIFEST_BUILD/items"
+}
+
+# The user unit that runs a container: Quadlet labels it, and a unit that calls
+# podman run holds its conmon process. Prints nothing for a container started by hand.
+container_unit() {
+  local pid unit
+  if [[ -n $2 ]]; then
+    echo "$2"
+    return
+  fi
+  pid=$(as_owner podman container inspect --format '{{.State.ConmonPid}}' "$1" 2>/dev/null || true)
+  [[ -n $pid && $pid != 0 && -r /proc/$pid/cgroup ]] || return 0
+  unit=$(sed -nE 's#.*/([^/]+\.service)(/.*)?$#\1#p' "/proc/$pid/cgroup" | tail -1)
+  [[ -z $unit || $unit == user@*.service ]] || echo "$unit"
+}
+
+STOPPED_UNITS=()
+STOPPED_CONTAINERS=()
+
+start_again() {
+  local unit container
+  for unit in "${STOPPED_UNITS[@]}"; do
+    as_owner systemctl --user start "$unit" || echo "⚠ Could not start $unit again" >&2
+  done
+  for container in "${STOPPED_CONTAINERS[@]}"; do
+    as_owner podman start "$container" >/dev/null || echo "⚠ Could not start $container again" >&2
+  done
+  STOPPED_UNITS=()
+  STOPPED_CONTAINERS=()
+}
+
+stop_containers() {
+  local container unit
+  while IFS='|' read -r container unit; do
+    [[ -n $container ]] || continue
+    unit=$(container_unit "$container" "$unit")
+    if [[ -n $unit ]]; then
+      [[ " ${STOPPED_UNITS[*]} " == *" $unit "* ]] || STOPPED_UNITS+=("$unit")
+    else
+      STOPPED_CONTAINERS+=("$container")
+    fi
+  done < <(as_owner podman ps --format '{{.Names}}|{{.Label "PODMAN_SYSTEMD_UNIT"}}')
+
+  for unit in "${STOPPED_UNITS[@]}"; do
+    echo "Stopping $unit"
+    as_owner systemctl --user stop "$unit"
+  done
+  for container in "${STOPPED_CONTAINERS[@]}"; do
+    echo "Stopping $container"
+    as_owner podman stop "$container" >/dev/null
+  done
+}
+
+cleanup_create() {
+  start_again
+  rm -rf -- "$MANIFEST"
+}
+
+create_backup() {
+  local repo_source root_source password_again
+
+  if [[ -e $MANIFEST ]]; then
+    echo "$MANIFEST exists. Another backup may be running; remove it if not." >&2
+    exit 1
+  fi
+  MANIFEST_BUILD=$(mktemp -d)
+  trap 'rm -rf -- "$MANIFEST_BUILD"' EXIT
+  : >"$MANIFEST_BUILD/system-units"
+
+  echo "Looking at what $OWNER runs (uid $OWNER_UID, gid $OWNER_GID)..."
+  inventory_owner
+  inventory_unit_files
+  inventory_referenced_files
+  inventory_podman
+  inventory_cloudflared
+  inventory_mounts
+  dedupe_items
+
+  echo
+  echo "Found"
+  printf '%s\n' "${FOUND[@]}"
+  if (( ${#SKIPPED[@]} > 0 )); then
+    echo
+    echo "Skipped"
+    printf '%s\n' "${SKIPPED[@]}"
+  fi
+  echo
+
+  if (( STOP )); then
+    echo "Running containers stop for the copy and start again afterwards."
+  else
+    echo "Containers keep running during the copy. A database that writes meanwhile"
+    echo "can come back inconsistent; pass --stop to pause them for the copy."
+  fi
+
+  repo_source=$(findmnt -no SOURCE -T "$(dirname -- "$REPO")" 2>/dev/null || true)
+  root_source=$(findmnt -no SOURCE -T / 2>/dev/null || true)
+  if [[ -n $repo_source && ${repo_source%%[*} == "${root_source%%[*}" ]]; then
+    echo
+    echo "⚠ $REPO is on this machine's system disk, which a clean install erases."
+    echo "  Use a NAS mount or another disk."
+  fi
+  echo
+
+  if [[ -f $REPO/config ]]; then
+    confirm "Save this to the restic repository at $REPO?" || exit 1
+    read_password
+    restic_run cat config >/dev/null
+  else
+    confirm "Create a new restic repository at $REPO and save this to it?" || exit 1
+    read_password
+    read -r -s -u 3 -p "Same password again: " password_again || true
+    echo
+    if [[ $PASSWORD != "$password_again" ]]; then
+      echo "The passwords differ." >&2
+      exit 1
+    fi
+    mkdir -p -- "$(dirname -- "$REPO")"
+    restic_run init
+    echo "Keep this password somewhere safe. Without it the backup cannot be read."
+  fi
+
+  mv -- "$MANIFEST_BUILD" "$MANIFEST"
+  chmod 700 "$MANIFEST"
+  trap cleanup_create EXIT
+
+  (( STOP )) && stop_containers
+
+  { echo "$MANIFEST"; cut -f2 "$MANIFEST/items"; } >"$MANIFEST/paths"
+  restic_run backup --tag "$TAG" --files-from-verbatim "$MANIFEST/paths"
+
+  start_again
+  echo
+  verify_backup
+}
+
+# ---------------------------------------------------------------- restore
+
+RESTORED=()
+FAILED=()
+DECLINED=()
+
+restored() { RESTORED+=("✓ $1"); }
+failed() { FAILED+=("⚠ $1"); }
+declined() { DECLINED+=("○ $1"); }
+
+OLD_HOME=""
+
+# Where a path from the old machine goes here: the old home maps to this owner's home.
+destination() {
+  if [[ -n $OLD_HOME && ( $1 == "$OLD_HOME" || $1 == "$OLD_HOME"/* ) ]]; then
+    echo "$OWNER_HOME${1#"$OLD_HOME"}"
+  else
+    echo "$1"
+  fi
+}
+
+# Creates the missing parents of $1, taking owner and mode from the matching
+# parents of $2 in the staging copy.
+make_parents() {
+  local dest=${1%/*} src=${2%/*}
+  [[ -z $dest || -d $dest ]] && return 0
+  make_parents "$dest" "$src" || return 1
+  mkdir -- "$dest" || return 1
+  if [[ -d $src ]]; then
+    chown --reference="$src" -- "$dest" && chmod --reference="$src" -- "$dest"
+  fi
+}
+
+# Returns 0 when placed or already identical, 1 when the user declined, 2 on failure.
+place_file() {
+  local src=$1 dest=$2
+  if [[ -e $dest || -L $dest ]]; then
+    if [[ -L $src && -L $dest && $(readlink -- "$src") == "$(readlink -- "$dest")" ]]; then
+      return 0
+    elif [[ ! -L $src && ! -L $dest ]] && cmp -s -- "$src" "$dest"; then
+      chown --reference="$src" -- "$dest" && chmod --reference="$src" -- "$dest" || return 2
+      return 0
+    fi
+    confirm "$(shown "$dest") exists and differs from the backup. Replace it?" || return 1
+    rm -f -- "$dest" || return 2
+  fi
+  make_parents "$dest" "$src" || return 2
+  cp -a -- "$src" "$dest" || return 2
+}
+
+place_tree() {
+  local src=$1 dest=$2 file status result=0
+  while IFS= read -r -d '' file; do
+    status=0
+    place_file "$file" "$dest${file#"$src"}" || status=$?
+    if (( status == 1 )); then
+      declined "Kept $(shown "$dest${file#"$src"}") as it was"
+    elif (( status == 2 )); then
+      result=2
+    fi
+  done < <(find "$src" -mindepth 1 \( -type f -o -type l \) -print0)
+  return $result
+}
+
+place_data() {
+  local src=$1 dest=$2
+  if [[ -d $dest && -n $(find "$dest" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
+    if diff -rq --no-dereference -- "$src" "$dest" >/dev/null 2>&1; then
+      return 0
+    fi
+    confirm "$(shown "$dest") already holds different data. Replace it with the backup?" || return 1
+    find "$dest" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + || return 2
+  elif [[ ! -d $dest ]]; then
+    make_parents "$dest" "$src" || return 2
+    mkdir -- "$dest" || return 2
+  fi
+  cp -a -- "$src/." "$dest/" || return 2
+  chown --reference="$src" -- "$dest" && chmod --reference="$src" -- "$dest" || return 2
+}
+
+report_place() {
+  case "$1" in
+  0) restored "$2" ;;
+  1) declined "Kept $2 as it was" ;;
+  *) failed "Could not restore $2" ;;
+  esac
+}
+
+restore_ranges() {
+  local file backup current changed=0
+  for file in subuid subgid; do
+    backup=$(sed -E "s/^[^:]+:/$OWNER:/" "$M/$file" | sed '/^$/d')
+    [[ -n $backup ]] || continue
+    current=$(grep -E "^($OWNER|$OWNER_UID):" "/etc/$file" || true)
+    if [[ $current == "$backup" ]]; then
+      restored "/etc/$file range for $OWNER"
+    elif [[ -z $current ]] || confirm "/etc/$file gives $OWNER $current. Use $backup from the old machine, so volume files keep their owners?"; then
+      { grep -vE "^($OWNER|$OWNER_UID):" "/etc/$file" || true; echo "$backup"; } >"/etc/$file.omarchy-restore"
+      chmod --reference="/etc/$file" "/etc/$file.omarchy-restore"
+      mv -- "/etc/$file.omarchy-restore" "/etc/$file"
+      changed=1
+      restored "/etc/$file range for $OWNER"
+    else
+      declined "Kept $OWNER's /etc/$file range; files in volumes may show the wrong owner"
+    fi
+  done
+  if (( changed )); then
+    as_owner podman system migrate >/dev/null 2>&1 || true
+  fi
+}
+
+restore_volumes() {
+  local name old_mount mount status label args
+  while IFS=$'\t' read -r name old_mount; do
+    [[ -n $name ]] || continue
+    if ! as_owner podman volume exists "$name"; then
+      args=()
+      while IFS= read -r label; do
+        [[ -n $label ]] && args+=(--label "$label")
+      done <"$M/volume-labels/$name"
+      if ! as_owner podman volume create "${args[@]}" "$name" >/dev/null; then
+        failed "Could not create volume $name"
+        continue
+      fi
+    fi
+    mount=$(as_owner podman volume inspect --format '{{.Mountpoint}}' "$name")
+    status=0
+    place_data "$STAGE$old_mount" "$mount" || status=$?
+    report_place "$status" "volume $name"
+  done <"$M/volumes"
+}
+
+restore_items() {
+  local kind path dest status
+  while IFS=$'\t' read -r kind path; do
+    [[ -n $kind && $kind != "volume" ]] || continue
+    dest=$(destination "$path")
+    if [[ ! -e $STAGE$path && ! -L $STAGE$path ]]; then
+      failed "$(shown "$dest") is missing from the backup"
+      continue
+    fi
+    status=0
+    if [[ $kind == "bind" || $kind == "secrets" ]]; then
+      place_data "$STAGE$path" "$dest" || status=$?
+    elif [[ -d $STAGE$path ]]; then
+      place_tree "$STAGE$path" "$dest" || status=$?
+    else
+      place_file "$STAGE$path" "$dest" || status=$?
+    fi
+    case "$kind" in
+    quadlets) report_place "$status" "Quadlet files in $(shown "$dest")" ;;
+    units) report_place "$status" "user units in $(shown "$dest")" ;;
+    env) report_place "$status" "env file $(shown "$dest")" ;;
+    bind) report_place "$status" "bind mount $(shown "$dest")" ;;
+    secrets) report_place "$status" "Podman secrets" ;;
+    cloudflared) report_place "$status" "cloudflared in $(shown "$dest")" ;;
+    credentials) report_place "$status" "mount credentials $dest" ;;
+    system-unit) report_place "$status" "system unit ${dest##*/}" ;;
+    esac
+  done <"$M/items"
+}
+
+restore_fstab() {
+  local spec mountpoint fstype options rest entry added=()
+  while IFS=$'\t' read -r spec mountpoint fstype options rest; do
+    [[ -n $spec ]] || continue
+    if awk -v mp="$mountpoint" '$1 !~ /^#/ && $2 == mp { found = 1 } END { exit !found }' /etc/fstab; then
+      restored "network mount $mountpoint, already in /etc/fstab"
+    elif confirm "Add the network mount $spec on $mountpoint ($fstype) to /etc/fstab?"; then
+      printf '%s %s %s %s %s\n' "$spec" "$mountpoint" "$fstype" "$options" "$rest" >>/etc/fstab
+      mkdir -p -- "$mountpoint"
+      added+=("$mountpoint|$options")
+    else
+      declined "Left $mountpoint out of /etc/fstab"
+    fi
+  done <"$M/fstab"
+  (( ${#added[@]} > 0 )) || return 0
+
+  systemctl daemon-reload
+  for entry in "${added[@]}"; do
+    mountpoint=${entry%%|*}
+    options=${entry#*|}
+    if [[ ,$options, == *,noauto,* ]]; then
+      restored "network mount $mountpoint in /etc/fstab, noauto so not mounted now"
+    elif mount -- "$mountpoint" 2>/dev/null; then
+      restored "network mount $mountpoint, mounted"
+    else
+      failed "Network mount $mountpoint is in /etc/fstab but did not mount. Once the share is reachable: sudo mount $mountpoint"
+    fi
+  done
+}
+
+restore_system_units() {
+  local unit state
+  [[ -s $M/system-units ]] || return 0
+  systemctl daemon-reload
+  while IFS=$'\t' read -r unit state; do
+    [[ -f /etc/systemd/system/$unit ]] || continue
+    if [[ $unit == cloudflared* ]] && ! command -v cloudflared >/dev/null; then
+      failed "$unit is back, but cloudflared is not installed. Install it with sudo pacman -S cloudflared, then: sudo systemctl enable --now $unit"
+    elif [[ $state == "enabled" ]]; then
+      if systemctl enable --now "$unit" >/dev/null 2>&1; then
+        restored "$unit enabled and started"
+      else
+        failed "$unit did not start. See: journalctl -u $unit"
+      fi
+    fi
+  done <"$M/system-units"
+}
+
+restore_images() {
+  local image
+  while IFS= read -r image; do
+    [[ -n $image ]] || continue
+    echo "Pulling $image"
+    if as_owner podman pull --quiet "$image" >/dev/null; then
+      restored "image $image"
+    else
+      failed "Could not pull image $image"
+    fi
+  done <"$M/images"
+}
+
+restore_user_units() {
+  local unit i
+  if [[ $(cat "$M/linger") == "yes" ]]; then
+    if loginctl enable-linger "$OWNER"; then
+      restored "linger for $OWNER"
+    else
+      failed "Could not turn on linger for $OWNER"
+    fi
+  fi
+
+  for (( i = 0; i < 20; i++ )); do
+    [[ -S /run/user/$OWNER_UID/bus ]] && break
+    sleep 0.5
+  done
+  if ! as_owner systemctl --user daemon-reload; then
+    failed "The user service manager for $OWNER is not running, so no service started. Log in over SSH and run this again"
+    return
+  fi
+
+  while IFS= read -r unit; do
+    [[ -n $unit ]] || continue
+    if as_owner systemctl --user reenable "$unit" >/dev/null 2>&1; then
+      restored "$unit enabled"
+    else
+      failed "Could not enable $unit"
+    fi
+  done <"$M/enabled-units"
+
+  while IFS= read -r unit; do
+    [[ -n $unit ]] || continue
+    if as_owner systemctl --user start "$unit" && as_owner systemctl --user is-active --quiet "$unit"; then
+      restored "$unit running"
+    else
+      failed "$unit did not start. See: journalctl --user -u $unit"
+    fi
+  done <"$M/active-units"
+}
+
+restore_backup() {
+  local old_user old_uid old_gid
+  if [[ ! -f $REPO/config ]]; then
+    echo "$REPO is not a restic repository." >&2
+    exit 1
+  fi
+  if ! command -v podman >/dev/null; then
+    echo "Podman is not installed. Install it with: sudo pacman -S podman" >&2
+    exit 1
+  fi
+  if [[ ! -d /run/user/$OWNER_UID ]]; then
+    echo "$OWNER has no running session. Log in as $OWNER over SSH and run this from there." >&2
+    exit 1
+  fi
+
+  read_password
+  echo "Latest backup in $REPO:"
+  restic_run snapshots --tag "$TAG" --latest 1 --compact
+
+  STAGE=$(mktemp -d /var/tmp/omarchy-restore.XXXXXX)
+  chmod 700 "$STAGE"
+  echo
+  echo "Copying it to $STAGE first..."
+  restic_run restore latest --tag "$TAG" --target "$STAGE"
+  M="$STAGE$MANIFEST"
+  if [[ ! -f $M/owner ]]; then
+    echo "The backup has no manifest, so it was not made by omarchy-backup create." >&2
+    exit 1
+  fi
+
+  old_user=$(sed -n 's/^user=//p' "$M/owner")
+  old_uid=$(sed -n 's/^uid=//p' "$M/owner")
+  old_gid=$(sed -n 's/^gid=//p' "$M/owner")
+  OLD_HOME=$(sed -n 's/^home=//p' "$M/owner")
+  echo
+  echo "Restoring what $old_user ran on $(sed -n 's/^host=//p' "$M/owner") for $OWNER here."
+  [[ $OLD_HOME == "$OWNER_HOME" ]] || echo "Files under $OLD_HOME go to $OWNER_HOME."
+  echo
+
+  restore_ranges
+  restore_items
+  restore_volumes
+  if [[ $old_uid != "$OWNER_UID" || $old_gid != "$OWNER_GID" ]]; then
+    chown -hR --from="$old_uid" "$OWNER_UID" -- "$OWNER_HOME"
+    chown -hR --from=":$old_gid" ":$OWNER_GID" -- "$OWNER_HOME"
+    restored "ownership moved from $old_uid:$old_gid to $OWNER_UID:$OWNER_GID"
+  fi
+  restore_fstab
+  restore_system_units
+  restore_images
+  restore_user_units
+
+  echo
+  echo "Came back"
+  printf '%s\n' "${RESTORED[@]}"
+  if (( ${#DECLINED[@]} > 0 )); then
+    echo
+    echo "Left as it was"
+    printf '%s\n' "${DECLINED[@]}"
+  fi
+  if (( ${#FAILED[@]} > 0 )); then
+    echo
+    echo "Failed"
+    printf '%s\n' "${FAILED[@]}"
+    echo
+    echo "The staging copy stays in $STAGE, readable by root only, until you remove it."
+    exit 1
+  fi
+  rm -rf -- "$STAGE"
+}
+
+case "$ACTION" in
+create) create_backup ;;
+verify)
+  read_password
+  verify_backup
+  ;;
+restore) restore_backup ;;
+esac
