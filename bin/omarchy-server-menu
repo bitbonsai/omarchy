@@ -248,7 +248,8 @@ fleet_menu() {
   [[ -n $host && $host != "$key" ]] || return
 
   if [[ $key == "ctrl-a" ]]; then
-    ssh -t "$host" omarchy agent --inline
+    # A login shell, so a Server peer running Omarchy from its checkout finds it.
+    ssh -t "$host" "bash -lc 'omarchy agent --inline'"
   else
     ssh "$host"
   fi
