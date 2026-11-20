@@ -123,6 +123,13 @@ case "$channel" in
     ;;
 esac
 
+# Omarchy Server runs the code from its dev checkout and installs no runtime
+# package: omarchy and omarchy-dev bring the desktop with them.
+if [[ $(omarchy-edition) == "server" ]]; then
+  [[ $channel == "dev" ]] || fail "Omarchy Server runs on the dev channel; nothing changed."
+  packages=(omarchy-settings-dev)
+fi
+
 # A channel this machine's platform has no templates for is refused before
 # anything changes (install/helpers/pacman.sh).
 source "$OMARCHY_PATH/install/helpers/pacman.sh"

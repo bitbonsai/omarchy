@@ -37,6 +37,13 @@ STUB
   chmod +x "$SUDO_TEST_ROOT/bin/$command"
 done
 
+# The edition, desktop unless a case names one.
+cat >"$SUDO_TEST_ROOT/bin/omarchy-edition" <<'STUB'
+#!/bin/bash
+echo "${SUDO_TEST_EDITION:-desktop}"
+STUB
+chmod +x "$SUDO_TEST_ROOT/bin/omarchy-edition"
+
 assert_channel_order() {
   python3 - "$SUDO_TEST_LOG" <<'PY'
 import sys
@@ -64,6 +71,23 @@ for channel in stable rc edge dev; do
   assert_channel_order
   pass "$channel runs the refresh hook before the transaction and hands off to one update authorization"
 done
+
+# Omarchy Server runs from its dev checkout: dev installs omarchy-settings-dev
+# alone, and the package channels, which bring omarchy and the desktop, are
+# refused before anything changes.
+reset_boundary
+SUDO_TEST_EDITION=server run_channel dev || fail "server dev failed" "$(<"$boundary_tmp/output")"
+assert_channel_order
+grep -Fxq 'sudo env OMARCHY_UPDATE_PACMAN=1 pacman -S --needed --noconfirm --ask 4 omarchy-settings-dev' "$SUDO_TEST_LOG" ||
+  fail "server dev installs only omarchy-settings-dev" "$(<"$SUDO_TEST_LOG")"
+pass "Omarchy Server's dev channel installs omarchy-settings-dev and no runtime package"
+for channel in stable rc edge; do
+  reset_boundary
+  if SUDO_TEST_EDITION=server run_channel "$channel"; then fail "server accepted $channel"; fi
+  if grep -Eq '^step:|^sudo ' "$SUDO_TEST_LOG"; then fail "server $channel was refused before any change" "$(<"$SUDO_TEST_LOG")"; fi
+  grep -q 'Omarchy Server runs on the dev channel' "$boundary_tmp/output" || fail "server $channel: the refusal says why" "$(<"$boundary_tmp/output")"
+done
+pass "Omarchy Server refuses the package channels before any change"
 
 # Every aarch64 platform switches to all four channels, copying its own
 # templates.
