@@ -8,7 +8,6 @@ copy_boundary_file bin/omarchy-channel-set
 copy_boundary_file bin/omarchy-refresh-pacman
 copy_boundary_file bin/omarchy-apply-pacman
 copy_boundary_file bin/omarchy-update
-copy_boundary_file bin/omarchy-edition
 export OMARCHY_UPDATE_LOGGED=1
 
 # Relocate the package root into the fixture, including the explicit handoff
@@ -38,6 +37,13 @@ STUB
   chmod +x "$SUDO_TEST_ROOT/bin/$command"
 done
 
+# The edition, desktop unless a case names one.
+cat >"$SUDO_TEST_ROOT/bin/omarchy-edition" <<'STUB'
+#!/bin/bash
+echo "${SUDO_TEST_EDITION:-desktop}"
+STUB
+chmod +x "$SUDO_TEST_ROOT/bin/omarchy-edition"
+
 assert_channel_order() {
   python3 - "$SUDO_TEST_LOG" <<'PY'
 import sys
@@ -65,6 +71,23 @@ for channel in stable rc edge dev; do
   assert_channel_order
   pass "$channel runs the refresh hook before the transaction and hands off to one update authorization"
 done
+
+# Omarchy Server runs from its dev checkout: dev installs omarchy-settings-dev
+# alone, and the package channels, which bring omarchy and the desktop, are
+# refused before anything changes.
+reset_boundary
+SUDO_TEST_EDITION=server run_channel dev || fail "server dev failed" "$(<"$boundary_tmp/output")"
+assert_channel_order
+grep -Fxq 'sudo env OMARCHY_UPDATE_PACMAN=1 pacman -S --needed --noconfirm --ask 4 omarchy-settings-dev' "$SUDO_TEST_LOG" ||
+  fail "server dev installs only omarchy-settings-dev" "$(<"$SUDO_TEST_LOG")"
+pass "Omarchy Server's dev channel installs omarchy-settings-dev and no runtime package"
+for channel in stable rc edge; do
+  reset_boundary
+  if SUDO_TEST_EDITION=server run_channel "$channel"; then fail "server accepted $channel"; fi
+  if grep -Eq '^step:|^sudo ' "$SUDO_TEST_LOG"; then fail "server $channel was refused before any change" "$(<"$SUDO_TEST_LOG")"; fi
+  grep -q 'only the dev channel works there' "$boundary_tmp/output" || fail "server $channel: the refusal says why" "$(<"$boundary_tmp/output")"
+done
+pass "Omarchy Server refuses the package channels before any change"
 
 # Every aarch64 platform switches to all four channels, copying its own
 # templates.
@@ -97,15 +120,6 @@ for channel in stable; do
 done
 mv "$boundary_tmp/saved-template" "$SUDO_TEST_ROOT/default/pacman/aarch64-apple/pacman-stable.conf"
 pass "a platform without a stable template refuses stable before any change"
-
-# Omarchy Server runs from its checkout: a package channel would leave it with
-# no Omarchy, or pull in the desktop.
-reset_boundary
-if OMARCHY_EDITION=server run_channel stable; then fail "Omarchy Server accepted the stable channel"; fi
-if grep -Eq '^step:|^sudo ' "$SUDO_TEST_LOG"; then fail "Omarchy Server refused stable before any change" "$(<"$SUDO_TEST_LOG")"; fi
-grep -q "only the dev channel works there" "$boundary_tmp/output" || fail "the Server refusal says why" "$(<"$boundary_tmp/output")"
-pass "Omarchy Server refuses package channels before any change"
-
 # A channel the platform has no template for stops before anything, the dev
 # confirmation included.
 mv "$SUDO_TEST_ROOT/default/pacman/aarch64-apple/pacman-edge.conf" "$boundary_tmp/saved-template"
