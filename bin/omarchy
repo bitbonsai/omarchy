@@ -32,6 +32,7 @@ GROUP_DESCRIPTIONS[agent]="AI coding agents, their usage, and subscription accou
 GROUP_DESCRIPTIONS[ascii]="Text drawn as ASCII art"
 GROUP_DESCRIPTIONS[audio]="Audio input and output controls"
 GROUP_DESCRIPTIONS[bar]="Omarchy shell bar layout and settings"
+GROUP_DESCRIPTIONS[backup]="Back up container services and restore them on a new install"
 GROUP_DESCRIPTIONS[battery]="Battery status helpers"
 GROUP_DESCRIPTIONS[bluetooth]="Bluetooth device controls"
 GROUP_DESCRIPTIONS[branch]="Omarchy git branch management"
