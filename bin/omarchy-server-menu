@@ -182,15 +182,22 @@ tunnel_setup() {
   cloudflared tunnel login
 }
 
-# omarchy backup owns storage and backups once it is installed.
+# Backups go through omarchy backup, which asks for the restic repository
+# each time: a NAS mount is the usual one.
+backup() {
+  local action=$1 repository
+
+  repository=$(gum input --prompt "Backup repository: " --placeholder "/mnt/nas/omarchy-backup") || return
+  [[ -n $repository ]] || return
+
+  if omarchy-backup "$action" "$repository" && [[ $action == "create" ]]; then
+    omarchy-done mark server-backups
+  fi
+  pause
+}
+
 storage_menu() {
   local choice
-
-  if omarchy-cmd-present omarchy-backup; then
-    omarchy-backup
-    pause
-    return
-  fi
 
   while :; do
     choice=$({
@@ -199,13 +206,20 @@ storage_menu() {
       if omarchy-server-setup-steps | grep -qx storage; then
         row "" "No network storage here" "marks storage as set up" storage-done
       fi
-      row "" "Backups" "not available yet" backups-missing
+      if omarchy-cmd-present omarchy-backup; then
+        row "" "Back up" "containers and their data" backup-create
+        row "" "Verify a backup" "" backup-verify
+        row "" "Restore a backup" "" backup-restore
+      else
+        row "" "Backups" "not available yet" backups-missing
+      fi
     } | pick open) || return
 
     case $choice in
       disks) page lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS ;;
       mounts) page findmnt -t nfs,nfs4,cifs,smb3,fuse.sshfs ;;
       storage-done) omarchy-done mark server-storage ;;
+      backup-*) backup "${choice#backup-}" ;;
       backups-missing) echo "Backups are not part of Omarchy Server yet."; pause ;;
     esac
   done
