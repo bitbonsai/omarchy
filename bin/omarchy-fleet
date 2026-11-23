@@ -1,0 +1,160 @@
+#!/bin/bash
+
+# omarchy:summary=Open a shell or agent on another machine on Tailscale
+# omarchy:args=[list|key|ssh <host>|agent <host>]
+# omarchy:examples=omarchy fleet | omarchy fleet list | omarchy fleet key | omarchy fleet ssh nas | omarchy fleet agent nas
+
+# Lists the other machines on this machine's tailnet in a type-to-filter list.
+# Enter opens a shell, Ctrl+A starts the inline agent there. Fleet keeps a
+# dedicated SSH key on this machine (~/.ssh/omarchy_fleet) that you authorize
+# on each peer you want to reach.
+
+set -euo pipefail
+
+FLEET_KEY="${OMARCHY_FLEET_KEY:-$HOME/.ssh/omarchy_fleet}"
+
+green=$'\e[32m' dim=$'\e[2m' reset=$'\e[0m'
+
+ensure_key() {
+  if [[ ! -f $FLEET_KEY ]]; then
+    mkdir -p "$(dirname "$FLEET_KEY")"
+    chmod 700 "$(dirname "$FLEET_KEY")"
+    ssh-keygen -q -t ed25519 -N '' -C "omarchy-fleet@$(hostname -s 2>/dev/null || hostname)" -f "$FLEET_KEY"
+  fi
+}
+
+require_tailscale() {
+  if ! command -v tailscale >/dev/null 2>&1; then
+    echo "Fleet lists your other machines on Tailscale, which is not installed here." >&2
+    return 1
+  fi
+  local status_json
+  if ! status_json=$(tailscale status --json 2>/dev/null); then
+    echo "Fleet lists your other machines on Tailscale, which is not connected here." >&2
+    return 1
+  fi
+  if [[ $(jq -r '.BackendState // ""' <<<"$status_json") != "Running" ]]; then
+    echo "Fleet lists your other machines on Tailscale, which is not connected here." >&2
+    return 1
+  fi
+  printf '%s\n' "$status_json"
+}
+
+peers() {
+  local status_json
+  status_json=$(require_tailscale) || return 1
+
+  jq -r '
+    [
+      .Peer // {} | .[]
+      | select((.DNSName // "" | length) > 0 or (.HostName // "" | length) > 0)
+      | select(((.Tags // []) | index("tag:mullvad-exit-node")) == null)
+      | {
+          host: (if (.DNSName // "") != "" then (.DNSName | split(".")[0]) else .HostName end),
+          online: (.Online // false),
+          ip: ((.TailscaleIPs // [])[0] // "")
+        }
+    ]
+    | sort_by([(if .online then 0 else 1 end), (.host | ascii_downcase)])
+    | .[]
+    | [.host, (if .online then "online" else "offline" end), .ip]
+    | @tsv
+  ' <<<"$status_json"
+}
+
+format_row() {
+  local host=$1 state=$2 pad=$(( 30 - ${#1} ))
+  (( pad < 2 )) && pad=2
+
+  if [[ $state == "online" ]]; then
+    printf '%s%*s%s%s%s\t%s\t%s\n' "$host" "$pad" "" "$green" "$state" "$reset" "$host" "$state"
+  else
+    printf '%s%s%*s%s%s\t%s\t%s\n' "$dim" "$host" "$pad" "" "$state" "$reset" "$host" "$state"
+  fi
+}
+
+connect() {
+  local mode=$1 host=$2 rc=0
+  ensure_key
+
+  if [[ $mode == "agent" ]]; then
+    # A login shell, so a Server peer running Omarchy from its checkout finds it.
+    ssh -t -i "$FLEET_KEY" "$host" "bash -lc 'omarchy agent --inline'" || rc=$?
+  else
+    ssh -i "$FLEET_KEY" "$host" || rc=$?
+  fi
+
+  if (( rc == 255 )); then
+    echo "Could not connect to $host. If it refused the key, authorize this machine's Fleet key there: omarchy fleet key" >&2
+  fi
+  return "$rc"
+}
+
+pick_peer() {
+  local peer_list choice key line host state
+
+  peer_list=$(peers) || return 1
+  if [[ -z $peer_list ]]; then
+    echo "No other machines on Tailscale."
+    return 0
+  fi
+
+  choice=$(
+    while IFS=$'\t' read -r host state _; do
+      format_row "$host" "$state"
+    done <<<"$peer_list" |
+      fzf --ansi --layout=reverse --height=~100% --info=hidden --no-separator \
+        --delimiter=$'\t' --with-nth=1 --prompt="" --ghost="Go…" --pointer="▌" --gutter=" " \
+        --footer="type to filter     ↵ shell     ctrl-a agent     esc back" \
+        --expect=ctrl-a
+  ) || return 0
+
+  key=$(head -1 <<<"$choice")
+  line=$(tail -n +2 <<<"$choice")
+  [[ -n $line ]] || return 0
+
+  IFS=$'\t' read -r _ host state <<<"$line"
+  [[ -n $host ]] || return 0
+
+  if [[ $state == "offline" ]]; then
+    echo "$host is offline." >&2
+    return 1
+  fi
+
+  if [[ $key == "ctrl-a" ]]; then
+    connect agent "$host"
+  else
+    connect ssh "$host"
+  fi
+}
+
+cmd=${1:-}
+case $cmd in
+  "")
+    pick_peer
+    ;;
+  list)
+    peer_list=$(peers) || exit 1
+    if [[ -z $peer_list ]]; then
+      echo "No other machines on Tailscale."
+    else
+      printf '%s\n' "$peer_list"
+    fi
+    ;;
+  key)
+    ensure_key
+    cat "$FLEET_KEY.pub"
+    ;;
+  ssh | agent)
+    host=${2:-}
+    if [[ -z $host ]]; then
+      echo "Usage: omarchy fleet $cmd <host>" >&2
+      exit 1
+    fi
+    connect "$cmd" "$host"
+    ;;
+  *)
+    echo "Usage: omarchy fleet [list|key|ssh <host>|agent <host>]" >&2
+    exit 1
+    ;;
+esac

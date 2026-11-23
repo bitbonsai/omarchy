@@ -242,31 +242,7 @@ agent_menu() {
 }
 
 fleet_menu() {
-  local choice key host
-
-  if omarchy-cmd-missing tailscale || ! tailscale status >/dev/null 2>&1; then
-    echo "Fleet lists your other machines on Tailscale, which is not connected here."
-    pause
-    return
-  fi
-
-  choice=$(
-    tailscale status --json |
-      jq -r '.Peer // {} | .[] | [(.DNSName | split(".")[0]), (if .Online then "online" else "offline" end)] | @tsv' |
-      while IFS=$'\t' read -r host state; do row "" "$host" "$state" "$host"; done |
-      pick "shell     ctrl-a agent" --expect=ctrl-a
-  ) || return
-
-  key=$(head -1 <<<"$choice")
-  host=$(tail -1 <<<"$choice")
-  [[ -n $host && $host != "$key" ]] || return
-
-  if [[ $key == "ctrl-a" ]]; then
-    # A login shell, so a Server peer running Omarchy from its checkout finds it.
-    ssh -t "$host" "bash -lc 'omarchy agent --inline'"
-  else
-    ssh "$host"
-  fi
+  omarchy-fleet || pause
 }
 
 printf -v reload 'start:reload-sync:%q --rows-with-updates' "$0"
