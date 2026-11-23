@@ -1,3 +1,4 @@
+run_logged "$OMARCHY_INSTALL/user/region.sh"
 run_logged "$OMARCHY_INSTALL/user/mise-work.sh"
 run_logged "$OMARCHY_INSTALL/user/mise.sh"
 

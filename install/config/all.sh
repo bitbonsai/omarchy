@@ -3,6 +3,7 @@ run_logged "$OMARCHY_INSTALL/config/ssh-command-path.sh"
 run_logged "$OMARCHY_INSTALL/config/ssh-keepalive.sh"
 run_logged "$OMARCHY_INSTALL/config/locale.sh"
 run_logged "$OMARCHY_INSTALL/config/language.sh"
+run_logged "$OMARCHY_INSTALL/config/region.sh"
 run_logged "$OMARCHY_INSTALL/config/snapper.sh"
 
 # Omarchy Server has no display, browser or lock screen, and is reached over
