@@ -94,6 +94,18 @@ pass "selecting an offline peer prints an error without invoking ssh"
 if out=$(SSH_EXIT=255 "$fleet" ssh nas 2>&1); then
   fail "ssh exit 255 propagates failure"
 fi
-[[ $out == *"omarchy fleet key"* ]] ||
+[[ $out == *"omarchy fleet auth nas"* ]] ||
   fail "ssh failure hints how to authorize the Fleet key" "$out"
 pass "ssh failure hints how to authorize the Fleet key"
+
+# omarchy fleet auth runs ssh-copy-id with the Fleet public key.
+copy_log="$test_tmp/ssh-copy-id.log"
+cat >"$test_tmp/bin/ssh-copy-id" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >"$copy_log"
+EOF
+chmod +x "$test_tmp/bin/ssh-copy-id"
+"$fleet" auth nas
+[[ $(cat "$copy_log") == "-i $OMARCHY_FLEET_KEY.pub nas" ]] ||
+  fail "omarchy fleet auth copies the Fleet public key via ssh-copy-id" "$(cat "$copy_log")"
+pass "omarchy fleet auth copies the Fleet public key via ssh-copy-id"

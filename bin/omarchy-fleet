@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # omarchy:summary=Open a shell or agent on another machine on Tailscale
-# omarchy:args=[list|key|ssh <host>|agent <host>]
-# omarchy:examples=omarchy fleet | omarchy fleet list | omarchy fleet key | omarchy fleet ssh nas | omarchy fleet agent nas
+# omarchy:args=[list|key|auth <host>|ssh <host>|agent <host>]
+# omarchy:examples=omarchy fleet | omarchy fleet list | omarchy fleet key | omarchy fleet auth nas | omarchy fleet ssh nas | omarchy fleet agent nas
 
 # Lists the other machines on this machine's tailnet in a type-to-filter list.
 # Enter opens a shell, Ctrl+A starts the inline agent there. Fleet keeps a
@@ -85,7 +85,7 @@ connect() {
   fi
 
   if (( rc == 255 )); then
-    echo "Could not connect to $host. If it refused the key, authorize this machine's Fleet key there: omarchy fleet key" >&2
+    echo "Could not connect to $host. If it refused the key, authorize this machine's Fleet key there: omarchy fleet auth $host" >&2
   fi
   return "$rc"
 }
@@ -145,6 +145,15 @@ case $cmd in
     ensure_key
     cat "$FLEET_KEY.pub"
     ;;
+  auth)
+    host=${2:-}
+    if [[ -z $host ]]; then
+      echo "Usage: omarchy fleet auth <host>" >&2
+      exit 1
+    fi
+    ensure_key
+    ssh-copy-id -i "$FLEET_KEY.pub" "$host"
+    ;;
   ssh | agent)
     host=${2:-}
     if [[ -z $host ]]; then
@@ -154,7 +163,7 @@ case $cmd in
     connect "$cmd" "$host"
     ;;
   *)
-    echo "Usage: omarchy fleet [list|key|ssh <host>|agent <host>]" >&2
+    echo "Usage: omarchy fleet [list|key|auth <host>|ssh <host>|agent <host>]" >&2
     exit 1
     ;;
 esac
