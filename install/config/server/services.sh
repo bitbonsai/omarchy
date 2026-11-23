@@ -4,5 +4,6 @@
 systemctl enable linux-modules-cleanup.service
 systemctl enable systemd-resolved.service
 systemctl enable NetworkManager.service
+systemctl enable NetworkManager-wait-online.service
 systemctl enable systemd-oomd.service
 systemctl enable sshd.service
