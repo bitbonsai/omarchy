@@ -104,7 +104,7 @@ if (( ${#not_set_up[@]} )); then
 fi
 
 if (( ${#problems[@]} )); then
-  echo "${dim}Run ${reset}omarchy menu${dim} to look.${reset}"
+  echo "${dim}Run ${reset}om${dim} to look.${reset}"
 elif (( ${#not_set_up[@]} )); then
-  echo "${dim}Run ${reset}omarchy menu${dim} to finish.${reset}"
+  echo "${dim}Run ${reset}om${dim} to finish.${reset}"
 fi

@@ -182,13 +182,20 @@ tunnel_setup() {
   cloudflared tunnel login
 }
 
-# Backups go through omarchy backup, which asks for the restic repository
-# each time: a NAS mount is the usual one.
+# Backups go through omarchy backup, pre-filling the last used restic
+# repository so routine backups only need Enter.
 backup() {
-  local action=$1 repository
+  local action=$1 state_dir repo_file last_repo="" repository
 
-  repository=$(gum input --prompt "Backup repository: " --placeholder "/mnt/nas/omarchy-backup") || return
+  state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
+  repo_file="$state_dir/backup-repo"
+  [[ -r $repo_file ]] && last_repo=$(<"$repo_file")
+
+  repository=$(gum input --prompt "Backup repository: " --placeholder "/mnt/nas/omarchy-backup" --value "$last_repo") || return
   [[ -n $repository ]] || return
+
+  mkdir -p "$state_dir"
+  printf '%s\n' "$repository" >"$repo_file"
 
   if omarchy-backup "$action" "$repository" && [[ $action == "create" ]]; then
     omarchy-done mark server-backups

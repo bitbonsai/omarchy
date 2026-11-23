@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# Shortcut for omarchy: bare `om` opens the menu; `om <args>` runs `omarchy <args>`.
+
+set -euo pipefail
+
+if (( $# == 0 )); then
+  exec omarchy menu
+fi
+
+exec omarchy "$@"
