@@ -1,0 +1,104 @@
+#!/bin/bash
+
+# omarchy:summary=Render the Omarchy Server tmux bottom status bar (right side)
+# omarchy:hidden=true
+
+# Called by tmux every few seconds (status-interval 5). Kept fast: reads /proc
+# and df directly, uses a 1s timeout for tailscale, and falls back to plain
+# ASCII on Linux TTY ($TERM=linux) or when OMARCHY_ASCII=1.
+
+set -uo pipefail
+
+ascii=0
+if [[ ${OMARCHY_ASCII:-0} == 1 || ${TERM:-} == linux ]]; then
+  ascii=1
+fi
+
+bg="#13141c"
+
+pill() {
+  local pbg=$1 pfg=$2 text=$3
+  if (( ascii )); then
+    printf '#[bg=%s,fg=%s] %s #[bg=%s] ' "$pbg" "$pfg" "$text" "$bg"
+  else
+    printf '#[fg=%s,bg=%s]#[bg=%s,fg=%s]%s#[fg=%s,bg=%s] ' \
+      "$pbg" "$bg" "$pbg" "$pfg" "$text" "$pbg" "$bg"
+  fi
+}
+
+# Icons (Nerd Font Material Design glyphs, or short ASCII labels).
+if (( ascii )); then
+  ico_net="net" ico_cpu="cpu" ico_mem="mem" ico_dsk="dsk"
+  ico_om="om" ico_err="!" ico_rbt="reboot"
+else
+  ico_net="󰖂" ico_cpu="󰻠" ico_mem="󰍛" ico_dsk="󰋊"
+  ico_om="󰀻" ico_err="󰀪" ico_rbt="󰜉"
+fi
+
+# 1. Failed systemd units (system + user).
+failed_sys=$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l)
+failed_usr=$(systemctl --user --failed --no-legend --plain 2>/dev/null | wc -l)
+failed=$(( failed_sys + failed_usr ))
+
+# 2. Disk usage (%) on /.
+disk_pct=$(df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9')
+disk_pct=${disk_pct:-0}
+
+# 3. Pending kernel reboot (running kernel's modules dir removed by upgrade).
+reboot_needed=0
+if [[ ! -d "/lib/modules/$(uname -r)" ]]; then
+  reboot_needed=1
+fi
+
+alerts=0
+if (( failed > 0 )); then
+  pill "#3b1d28" "#f7768e,bold" "$ico_err ${failed} failed"
+  alerts=1
+fi
+if (( disk_pct >= 85 )); then
+  pill "#3a261c" "#ff9e64,bold" "$ico_dsk ${disk_pct}%"
+  alerts=1
+fi
+if (( reboot_needed )); then
+  pill "#362b1c" "#e0af68,bold" "$ico_rbt"
+  alerts=1
+fi
+
+# When everything is healthy, show calm tailnet + CPU/RAM/Disk telemetry.
+if (( ! alerts )); then
+  # Tailscale status (fast, bounded).
+  if command -v tailscale >/dev/null 2>&1; then
+    ts_state=$(timeout 1 tailscale status --self --json 2>/dev/null | jq -r '.BackendState // ""' 2>/dev/null || true)
+    if [[ $ts_state == "Running" ]]; then
+      pill "#1c1f2e" "#a9b1d6" "#[fg=#9ece6a]${ico_net}#[fg=#a9b1d6] tailnet"
+    fi
+  fi
+
+  # CPU load (1m load normalized to % of cores, fast /proc read).
+  cores=$(nproc 2>/dev/null || echo 1)
+  cpu_pct=$(awk -v c="$cores" '{ p = int(($1 / c) * 100 + 0.5); if (p > 100) p = 100; print p }' /proc/loadavg 2>/dev/null || echo 0)
+
+  # RAM used (MemTotal - MemAvailable, human G/M).
+  mem_used=$(awk '
+    /^MemTotal:/     { t = $2 }
+    /^MemAvailable:/ { a = $2 }
+    END {
+      u = t - a
+      if (u >= 1048576) printf "%.1fG", u / 1048576
+      else printf "%dM", int(u / 1024)
+    }
+  ' /proc/meminfo 2>/dev/null || echo "0M")
+
+  if (( ascii )); then
+    pill "#1c1f2e" "#a9b1d6" "cpu ${cpu_pct}% · mem ${mem_used} · dsk ${disk_pct}%"
+  else
+    pill "#1c1f2e" "#a9b1d6" "#[fg=#7aa2f7]${ico_cpu}#[fg=#a9b1d6] ${cpu_pct}% #[fg=#3b4261]· #[fg=#7aa2f7]${ico_mem}#[fg=#a9b1d6] ${mem_used} #[fg=#3b4261]· #[fg=#7aa2f7]${ico_dsk}#[fg=#a9b1d6] ${disk_pct}%"
+  fi
+fi
+
+# Always keep the subtle om menu pill on the far right.
+if (( ascii )); then
+  pill "#2a2415" "#e0af68,bold" "om"
+else
+  pill "#2a2415" "#e0af68,bold" "${ico_om} om"
+fi

@@ -11,11 +11,104 @@
 set -uo pipefail
 
 case ${TERM:-} in
-  xterm-ghostty | xterm-kitty | alacritty | foot*) icons=1 ;;
+  xterm-ghostty | xterm-kitty | alacritty | foot* | tmux*) icons=1 ;;
   *) icons=0 ;;
 esac
+[[ ${OMARCHY_ASCII:-0} == 1 ]] && icons=0
 
-dim=$'\e[2m' reset=$'\e[0m'
+dim=$'\e[2m' green=$'\e[32m' red=$'\e[31m' amber=$'\e[33m' reset=$'\e[0m'
+
+in_popup() {
+  [[ -n ${OMARCHY_IN_POPUP:-} && -n ${TMUX:-} ]]
+}
+
+open_tab() {
+  local name=$1 cmd=$2
+  tmux new-window -n "$name" "$cmd"
+  exit 0
+}
+
+preview_pane() {
+  local key=${1:-}
+  case $key in
+    setup)
+      printf '%sFinish setup%s\n\n' "$amber" "$reset"
+      omarchy-server-setup-steps | while read -r s; do
+        printf '  %s○%s %s\n' "$amber" "$reset" "$s"
+      done
+      ;;
+    services)
+      local count failed
+      count=$(systemctl list-units --type=service --state=running --no-legend --plain 2>/dev/null | wc -l)
+      failed=$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l)
+      printf '%sServices%s  %s%s running · %s failed%s\n\n' "$amber" "$reset" "$dim" "$count" "$failed" "$reset"
+      systemctl --failed --no-legend --plain 2>/dev/null | head -5 | while read -r u _; do
+        printf '  %s●%s %s %sfailed%s\n' "$red" "$reset" "${u%.service}" "$red" "$reset"
+      done
+      systemctl --user list-units --type=service --state=running --no-legend --plain 2>/dev/null | head -6 | while read -r u _; do
+        printf '  %s●%s %s %suser%s\n' "$green" "$reset" "${u%.service}" "$dim" "$reset"
+      done
+      systemctl list-units --type=service --state=running --no-legend --plain 2>/dev/null | grep -E '^(sshd|tailscaled|ufw|caddy|podman)' | head -6 | while read -r u _; do
+        printf '  %s●%s %s %ssystem%s\n' "$green" "$reset" "${u%.service}" "$dim" "$reset"
+      done
+      ;;
+    network)
+      printf '%sNetwork%s\n\n' "$amber" "$reset"
+      ip -brief address 2>/dev/null | awk '$2 == "UP" || $1 ~ /^tailscale/ { printf "  %-12s %s\n", $1, $3 }'
+      echo
+      if command -v tailscale >/dev/null 2>&1 && timeout 1 tailscale status >/dev/null 2>&1; then
+        printf '  %s●%s Tailscale connected\n' "$green" "$reset"
+      else
+        printf '  %s○%s Tailscale not connected\n' "$dim" "$reset"
+      fi
+      ;;
+    storage)
+      printf '%sStorage & backups%s\n\n' "$amber" "$reset"
+      df -h / /home 2>/dev/null | awk 'NR==1 || !seen[$1]++ { printf "  %s\n", $0 }'
+      echo
+      local repo_file="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/backup-repo"
+      if [[ -r $repo_file ]]; then
+        printf '  %sLast repo:%s %s\n' "$dim" "$reset" "$(<"$repo_file")"
+      else
+        printf '  %sNo backup repository configured yet.%s\n' "$dim" "$reset"
+      fi
+      ;;
+    agent)
+      local agent
+      agent=$(omarchy-default-agent 2>/dev/null || true)
+      printf '%sCoding agent%s\n\n' "$amber" "$reset"
+      if [[ -n $agent ]]; then
+        printf '  Default: %s\n\n  %sOpens in a dedicated tmux tab.%s\n' "$agent" "$dim" "$reset"
+      else
+        printf '  %sNot configured yet. Press Enter to pick one.%s\n' "$dim" "$reset"
+      fi
+      ;;
+    updates)
+      printf '%sSystem updates%s\n\n' "$amber" "$reset"
+      printf '  Version: %s\n' "$(omarchy-version 2>/dev/null || echo dev)"
+      printf '  %sEnter runs omarchy update in a tmux tab.%s\n' "$dim" "$reset"
+      ;;
+    fleet)
+      printf '%sTailscale fleet%s\n\n' "$amber" "$reset"
+      if omarchy-fleet list 2>/dev/null | head -8 | while IFS=$'\t' read -r h st ip; do
+        if [[ $st == "online" ]]; then
+          printf '  %s●%s %-14s %s%s%s\n' "$green" "$reset" "$h" "$dim" "$ip" "$reset"
+        else
+          printf '  %s○ %-14s offline%s\n' "$dim" "$h" "$reset"
+        fi
+      done; then
+        :
+      else
+        printf '  %sTailscale not connected.%s\n' "$dim" "$reset"
+      fi
+      ;;
+  esac
+}
+
+if [[ ${1:-} == "--preview" ]]; then
+  preview_pane "${2:-}"
+  exit 0
+fi
 
 # A row is "<shown>\t<key>": the label, then its hint dimmed in a column.
 row() {
@@ -143,7 +236,13 @@ unit_menu() {
 
   case $choice in
     status) page "${systemctl[@]}" status "$unit" ;;
-    logs) "${journal[@]}" -u "$unit" -e ;;
+    logs)
+      if in_popup; then
+        open_tab "logs:${unit%.service}" "${journal[*]} -u $(printf '%q' "$unit") -f"
+      else
+        "${journal[@]}" -u "$unit" -e
+      fi
+      ;;
     restart) "${restart[@]}" restart "$unit"; pause ;;
   esac
 }
@@ -245,6 +344,9 @@ agent_menu() {
     omarchy-default-agent --install "$agent" || { pause; return; }
   fi
 
+  if in_popup; then
+    open_tab "agent" "omarchy-agent --inline"
+  fi
   omarchy-agent --inline
 }
 
@@ -253,8 +355,11 @@ fleet_menu() {
 }
 
 printf -v reload 'start:reload-sync:%q --rows-with-updates' "$0"
+printf -v preview_cmd '%q --preview {2}' "$0"
 while :; do
-  choice=$(main_rows | pick open --bind "$reload") || exit 0
+  choice=$(main_rows | pick open --bind "$reload" \
+    --preview "$preview_cmd" \
+    --preview-window="right:52%:border-left:wrap,<78(hidden)") || exit 0
 
   case $choice in
     setup) setup_menu ;;
@@ -262,7 +367,13 @@ while :; do
     network) network_menu ;;
     storage) storage_menu ;;
     agent) agent_menu ;;
-    updates) omarchy-update; pause ;;
+    updates)
+      if in_popup; then
+        open_tab "update" "omarchy-update; echo; read -rsn1 -p 'Press any key to close'"
+      else
+        omarchy-update; pause
+      fi
+      ;;
     fleet) fleet_menu ;;
   esac
 done

@@ -1,10 +1,22 @@
-# Sourced by /etc/profile.d/omarchy.sh in login shells, so it stays POSIX sh.
-# On Omarchy Server a person logging in at a terminal, over SSH or on the
-# console, sees the status lines before the prompt. Commands over SSH, scp,
-# sftp, root shells and the login shells tmux opens in its panes stay quiet.
+# Sourced by /etc/profile.d/omarchy.sh (and default/bash/rc for login shells),
+# so it stays POSIX sh. On Omarchy Server, interactive SSH logins attach to a
+# persistent tmux session with the bottom status bar and floating om/fleet
+# popups. Commands over SSH, scp, sftp, root shells, nested tmux and
+# OMARCHY_NO_TMUX=1 stay untouched.
 case $- in
   *i*)
-    if [ -t 1 ] && [ -z "${TMUX:-}" ] && [ "$(id -u)" != 0 ] && [ "$(omarchy-edition)" = "server" ]; then
+    if [ -z "${_OMARCHY_SERVER_LOGIN_DONE:-}" ] && [ -t 0 ] && [ -t 1 ] && [ -z "${TMUX:-}" ] && [ "$(id -u)" != 0 ] && [ "$(omarchy-edition)" = "server" ]; then
+      _OMARCHY_SERVER_LOGIN_DONE=1
+      if [ -n "${SSH_CONNECTION:-}" ] && [ -z "${OMARCHY_NO_TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
+        _omarchy_tmux_conf="${OMARCHY_PATH:-$HOME/.local/share/omarchy}/default/tmux/server.conf"
+        if [ -r "$_omarchy_tmux_conf" ]; then
+          if ! infocmp "${TERM:-}" >/dev/null 2>&1; then
+            export TERM=xterm-256color
+          fi
+          exec tmux -f "$_omarchy_tmux_conf" new-session -A -s omarchy
+        fi
+        unset _omarchy_tmux_conf
+      fi
       omarchy-server-status
     fi
     ;;

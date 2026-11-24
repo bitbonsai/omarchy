@@ -1,11 +1,26 @@
 #!/bin/bash
 
 # Shortcut for omarchy: bare `om` opens the menu; `om <args>` runs `omarchy <args>`.
+# Inside tmux (outside a popup), `om` and bare `om fleet` float in a rounded
+# tmux display-popup so your shell stays visible behind them.
 
 set -euo pipefail
 
+popup() {
+  local cmd=$1
+  exec tmux display-popup -E -w 78% -h 76% -b rounded -S "fg=#3b3526" \
+    "OMARCHY_IN_POPUP=1 $cmd"
+}
+
 if (( $# == 0 )); then
+  if [[ -n ${TMUX:-} && -z ${OMARCHY_IN_POPUP:-} ]]; then
+    popup "omarchy menu"
+  fi
   exec omarchy menu
+fi
+
+if (( $# == 1 )) && [[ $1 == "fleet" ]] && [[ -n ${TMUX:-} && -z ${OMARCHY_IN_POPUP:-} ]]; then
+  popup "omarchy fleet"
 fi
 
 exec omarchy "$@"
