@@ -17,9 +17,45 @@ esac
 [[ ${OMARCHY_ASCII:-0} == 1 ]] && icons=0
 
 dim=$'\e[2m' green=$'\e[32m' red=$'\e[31m' amber=$'\e[33m' reset=$'\e[0m'
+muted=$'\e[38;2;139;143;158m' sep_fg=$'\e[38;2;86;95;137m'
 
 in_popup() {
   [[ -n ${OMARCHY_IN_POPUP:-} && -n ${TMUX:-} ]]
+}
+
+# Rounded Nerd Font pills matching the tmux bottom status bar (on #16161e popup bg).
+pill() {
+  local pbg=$1 pfg=$2 text=$3 outer="48;2;22;22;30;"
+  in_popup || outer=""
+  if (( icons )); then
+    printf '\e[%s38;2;%sm\e[48;2;%s;38;2;%sm%s\e[0m\e[%s38;2;%sm\e[0m' \
+      "$outer" "$pbg" "$pbg" "$pfg" "$text" "$outer" "$pbg"
+  else
+    printf '\e[48;2;%s;38;2;%sm %s \e[0m' "$pbg" "$pfg" "$text"
+  fi
+}
+
+pill_amber() { pill "42;36;21" "224;175;104;1" "$1"; }
+pill_slate() { pill "36;40;59" "192;202;245" "$1"; }
+pill_key()   { pill "36;40;59" "224;175;104" "$1"; }
+pill_green() { pill "28;43;34" "158;206;106" "$1"; }
+pill_red()   { pill "59;29;40" "247;118;142;1" "$1"; }
+pill_muted() { pill "28;31;46" "139;143;158" "$1"; }
+
+crumb() {
+  local root_label="om"
+  (( icons )) && root_label="󰀻 om"
+  if (($# == 0)); then
+    pill_amber "$root_label"
+    return
+  fi
+  local out
+  out=$(pill_amber "$root_label")
+  local part
+  for part in "$@"; do
+    out+=" ${sep_fg}›${reset} $(pill_slate "$part")"
+  done
+  printf '%s' "$out"
 }
 
 open_tab() {
@@ -32,16 +68,21 @@ preview_pane() {
   local key=${1:-}
   case $key in
     setup)
-      printf '%sFinish setup%s\n\n' "$amber" "$reset"
+      printf '%s\n\n' "$(pill_amber "Finish setup")"
       omarchy-server-setup-steps | while read -r s; do
         printf '  %s○%s %s\n' "$amber" "$reset" "$s"
       done
       ;;
     services)
-      local count failed
+      local count failed badge
       count=$(systemctl list-units --type=service --state=running --no-legend --plain 2>/dev/null | wc -l)
       failed=$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l)
-      printf '%sServices%s  %s%s running · %s failed%s\n\n' "$amber" "$reset" "$dim" "$count" "$failed" "$reset"
+      if (( failed > 0 )); then
+        badge="$(pill_red "$failed failed") $(pill_muted "$count running")"
+      else
+        badge="$(pill_muted "$count running · 0 failed")"
+      fi
+      printf '%s  %s\n\n' "$(pill_amber "Services")" "$badge"
       systemctl --failed --no-legend --plain 2>/dev/null | head -5 | while read -r u _; do
         printf '  %s●%s %s %sfailed%s\n' "$red" "$reset" "${u%.service}" "$red" "$reset"
       done
@@ -53,17 +94,17 @@ preview_pane() {
       done
       ;;
     network)
-      printf '%sNetwork%s\n\n' "$amber" "$reset"
+      printf '%s\n\n' "$(pill_amber "Network")"
       ip -brief address 2>/dev/null | awk '$2 == "UP" || $1 ~ /^tailscale/ { printf "  %-12s %s\n", $1, $3 }'
       echo
       if command -v tailscale >/dev/null 2>&1 && timeout 1 tailscale status >/dev/null 2>&1; then
-        printf '  %s●%s Tailscale connected\n' "$green" "$reset"
+        printf '  %s\n' "$(pill_green "● Tailscale connected")"
       else
-        printf '  %s○%s Tailscale not connected\n' "$dim" "$reset"
+        printf '  %s\n' "$(pill_muted "○ Tailscale not connected")"
       fi
       ;;
     storage)
-      printf '%sStorage & backups%s\n\n' "$amber" "$reset"
+      printf '%s\n\n' "$(pill_amber "Storage & backups")"
       df -h / /home 2>/dev/null | awk 'NR==1 || !seen[$1]++ { printf "  %s\n", $0 }'
       echo
       local repo_file="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/backup-repo"
@@ -76,20 +117,19 @@ preview_pane() {
     agent)
       local agent
       agent=$(omarchy-default-agent 2>/dev/null || true)
-      printf '%sCoding agent%s\n\n' "$amber" "$reset"
+      printf '%s\n\n' "$(pill_amber "Coding agent")"
       if [[ -n $agent ]]; then
-        printf '  Default: %s\n\n  %sOpens in a dedicated tmux tab.%s\n' "$agent" "$dim" "$reset"
+        printf '  Default: %s\n\n  %sOpens in a dedicated tmux tab.%s\n' "$(pill_slate "$agent")" "$dim" "$reset"
       else
         printf '  %sNot configured yet. Press Enter to pick one.%s\n' "$dim" "$reset"
       fi
       ;;
     updates)
-      printf '%sSystem updates%s\n\n' "$amber" "$reset"
-      printf '  Version: %s\n' "$(omarchy-version 2>/dev/null || echo dev)"
+      printf '%s  %s\n\n' "$(pill_amber "System updates")" "$(pill_muted "$(omarchy-version 2>/dev/null || echo dev)")"
       printf '  %sEnter runs omarchy update in a tmux tab.%s\n' "$dim" "$reset"
       ;;
     fleet)
-      printf '%sTailscale fleet%s\n\n' "$amber" "$reset"
+      printf '%s\n\n' "$(pill_amber "Tailscale fleet")"
       if omarchy-fleet list 2>/dev/null | head -8 | while IFS=$'\t' read -r h st ip; do
         if [[ $st == "online" ]]; then
           printf '  %s●%s %-14s %s%s%s\n' "$green" "$reset" "$h" "$dim" "$ip" "$reset"
@@ -99,7 +139,7 @@ preview_pane() {
       done; then
         :
       else
-        printf '  %sTailscale not connected.%s\n' "$dim" "$reset"
+        printf '  %s\n' "$(pill_muted "Tailscale not connected")"
       fi
       ;;
   esac
@@ -127,10 +167,14 @@ pick() {
   local enter=$1
   shift
 
-  fzf --ansi --layout=reverse --height=100% --padding="0,1" --info=hidden --no-separator \
+  local ftr colors="pointer:#e0af68,fg+:#e0af68,bg+:#24283b,hl:#e0af68,hl+:#e0af68,border:#3b3526,separator:#24283b,prompt:#e0af68,ghost:#565f89"
+  in_popup && colors="bg:#16161e,gutter:#16161e,preview-bg:#16161e,$colors"
+  ftr="$(pill_key "type") ${muted}filter${reset}   $(pill_key "↵") ${muted}${enter}${reset}   $(pill_key "esc") ${muted}back${reset}"
+
+  fzf --ansi --layout=reverse --height=100% --padding="1,2" --header-first --info=hidden --no-separator \
     --delimiter=$'\t' --with-nth=1 --prompt="❯ " --ghost="Go…" --pointer="▌" --gutter=" " \
-    --color="pointer:#e0af68,fg+:#e0af68,bg+:#24283b,hl:#e0af68,hl+:#e0af68,border:#3b3526,separator:#24283b,prompt:#e0af68,ghost:#565f89" \
-    --footer="type to filter     ↵ $enter     esc back" "$@" |
+    --color="$colors" \
+    --footer="$ftr" "$@" |
     cut -f2
 }
 
@@ -141,12 +185,18 @@ pause() {
 }
 
 run_padded() {
+  local header=""
+  if [[ ${1:-} == "--header" ]]; then
+    header=$2
+    shift 2
+  fi
   if ! in_popup || ! command -v python3 >/dev/null 2>&1; then
     "$@"
     return
   fi
 
   clear
+  [[ -n $header ]] && printf '\n  %s\n' "$header"
   python3 -c '
 import fcntl, os, pty, re, select, struct, sys, termios, tty
 
@@ -203,14 +253,14 @@ page() {
     less_args+=(-P ' q back')
   fi
   {
-    printf '\n'
+    printf '\n  %s\n\n' "$(crumb "$title")"
     printf '%s\n' "$out" | sed 's/^/  /'
-    if (( lines + 2 < rows )); then
-      for (( pad = lines + 2; pad < rows; pad++ )); do
+    if (( lines + 4 < rows )); then
+      for (( pad = lines + 4; pad < rows; pad++ )); do
         printf '\n'
       done
     fi
-  } | less "${less_args[@]}" || rc=$?
+  } | LESSUTFCHARDEF="E000-F8FF:p,F0000-FFFFD:p" less "${less_args[@]}" || rc=$?
 
   if (( rc == 84 )) && in_popup; then
     local tmp
@@ -265,7 +315,7 @@ setup_menu() {
         backups) row "" "Backups" "" backups ;;
         agent) row "" "Agent" "choose a coding agent" agent ;;
       esac
-    done < <(omarchy-server-setup-steps) | pick open
+    done < <(omarchy-server-setup-steps) | pick open --header "$(crumb "Finish setup")"
   ) || return
 
   case $choice in
@@ -288,7 +338,7 @@ services_menu() {
           while read -r unit _ _ state _; do row "" "${unit%.service}" "$state, user" "user:$unit"; done
         systemctl list-units --type=service --state=running,failed --no-legend --plain |
           while read -r unit _ _ state _; do row "" "${unit%.service}" "$state" "system:$unit"; done
-      } | pick open
+      } | pick open --header "$(crumb "Services")"
     ) || return
 
     unit_menu "${choice%%:*}" "${choice#*:}"
@@ -309,7 +359,7 @@ unit_menu() {
     row "" "Status" "" status
     row "" "Logs" "" logs
     row "" "Restart" "" restart
-  } | pick open) || return
+  } | pick open --header "$(crumb "Services" "${unit%.service}")") || return
 
   case $choice in
     status) page "status:${unit%.service}" "${systemctl[@]}" status "$unit" ;;
@@ -338,7 +388,7 @@ network_menu() {
       else
         row "" "Set up Tailscale" "" tailscale-install
       fi
-    } | pick open) || return
+    } | pick open --header "$(crumb "Network")") || return
 
     case $choice in
       addresses) page addresses ip -brief address ;;
@@ -367,13 +417,15 @@ backup() {
   repo_file="$state_dir/backup-repo"
   [[ -r $repo_file ]] && last_repo=$(<"$repo_file")
 
+  clear
+  printf '\n  %s\n' "$(crumb "Storage & backups" "Back up")"
   repository=$(gum input --padding="1 2" --prompt "Backup repository: " --placeholder "/mnt/nas/omarchy-backup" --value "$last_repo") || return
   [[ -n $repository ]] || return
 
   mkdir -p "$state_dir"
   printf '%s\n' "$repository" >"$repo_file"
 
-  if run_padded omarchy-backup "$action" "$repository" && [[ $action == "create" ]]; then
+  if run_padded --header "$(crumb "Storage & backups" "Back up")  $(pill_muted "$repository")" omarchy-backup "$action" "$repository" && [[ $action == "create" ]]; then
     omarchy-done mark server-backups
   fi
   pause
@@ -396,7 +448,7 @@ storage_menu() {
       else
         row "" "Backups" "not available yet" backups-missing
       fi
-    } | pick open) || return
+    } | pick open --header "$(crumb "Storage & backups")") || return
 
     case $choice in
       disks) page disks lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS ;;
@@ -437,7 +489,7 @@ agent_apikey_menu() {
     row "" "MiniMax" "API key via OpenCode" minimax
     row "" "Synthetic" "API key via OpenCode" synthetic
     row "" "Z.ai" "API key via OpenCode" zai
-  } | pick choose) || return 1
+  } | pick choose --header "$(crumb "Agent" "API key")") || return 1
 
   add_agent_account "$provider"
 }
@@ -446,7 +498,7 @@ agent_copy_hint() {
   local target
   target="$(id -un)@$(hostname -s 2>/dev/null || hostname)"
   clear
-  printf '\n  %sCopy agent login from your desktop%s\n\n' "$amber" "$reset"
+  printf '\n  %s\n\n' "$(crumb "Agent" "Copy from desktop")"
   printf '  Run this on your Omarchy desktop to transfer your\n'
   printf '  Claude, Codex, or Grok subscription over SSH:\n\n'
   printf '    %somarchy agent account copy %s%s\n\n' "$green" "$target" "$reset"
@@ -459,7 +511,7 @@ agent_other_menu() {
   # The harnesses omarchy default agent takes, as its metadata lists them.
   agent=$(
     sed -n 's/^# omarchy:args=\[\(.*\)\]$/\1/p' "$(command -v omarchy-default-agent)" | tr '|' '\n' |
-      while read -r name; do row "" "$name" "" "$name"; done | pick choose
+      while read -r name; do row "" "$name" "" "$name"; done | pick choose --header "$(crumb "Agent" "Other harness")"
   ) || return 1
 
   install_agent "$agent"
@@ -479,7 +531,7 @@ agent_menu() {
         row "" "Pi" "bring your own / multi-provider" pi
         row "" "Copy from desktop" "omarchy agent account copy" copy
         row "" "Other harness…" "all 25 harnesses" other
-      } | pick choose) || return
+      } | pick choose --header "$(crumb "Agent")") || return
 
       case $choice in
         claude | codex | pi) install_agent "$choice"; return ;;
@@ -504,7 +556,7 @@ fleet_menu() {
 printf -v reload 'start:reload-sync:%q --rows-with-updates' "$0"
 printf -v preview_cmd '%q --preview {2}' "$0"
 while :; do
-  choice=$(main_rows | pick open --bind "$reload" \
+  choice=$(main_rows | pick open --header "$(crumb)" --bind "$reload" \
     --preview "$preview_cmd" \
     --preview-window="right:48%:border-left:wrap") || exit 0
 
