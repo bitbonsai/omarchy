@@ -17,7 +17,7 @@ case $- in
             exec tmux -f "$_omarchy_tmux_conf" attach-session -t omarchy
           elif [ -z "${OMARCHY_NO_WELCOME:-}" ] && command -v omarchy-server-welcome >/dev/null 2>&1; then
             exec tmux -f "$_omarchy_tmux_conf" new-session -s omarchy -n bash \
-              "omarchy-server-welcome; exec \"${SHELL:-/bin/bash}\""
+              "omarchy-server-welcome; exec \"${SHELL:-/bin/bash}\" -l"
           else
             exec tmux -f "$_omarchy_tmux_conf" new-session -s omarchy
           fi
