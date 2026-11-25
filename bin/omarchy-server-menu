@@ -58,6 +58,10 @@ crumb() {
   printf '%s' "$out"
 }
 
+crumb_header() {
+  printf '%s\n ' "$(crumb "$@")"
+}
+
 open_tab() {
   local name=$1 cmd=$2
   tmux new-window -n "$name" "$cmd"
@@ -171,7 +175,7 @@ pick() {
   in_popup && colors="bg:#16161e,gutter:#16161e,preview-bg:#16161e,$colors"
   ftr="$(pill_key "type") ${muted}filter${reset}   $(pill_key "↵") ${muted}${enter}${reset}   $(pill_key "esc") ${muted}back${reset}"
 
-  fzf --ansi --layout=reverse --height=100% --padding="1,2" --header-first --info=hidden --no-separator \
+  fzf --ansi --layout=reverse --height=100% --padding="1,2" --header-first --info=hidden --separator=" " \
     --delimiter=$'\t' --with-nth=1 --prompt="❯ " --ghost="Go…" --pointer="▌" --gutter=" " \
     --color="$colors" \
     --footer="$ftr" "$@" |
@@ -315,7 +319,7 @@ setup_menu() {
         backups) row "" "Backups" "" backups ;;
         agent) row "" "Agent" "choose a coding agent" agent ;;
       esac
-    done < <(omarchy-server-setup-steps) | pick open --header "$(crumb "Finish setup")"
+    done < <(omarchy-server-setup-steps) | pick open --header "$(crumb_header "Finish setup")"
   ) || return
 
   case $choice in
@@ -338,7 +342,7 @@ services_menu() {
           while read -r unit _ _ state _; do row "" "${unit%.service}" "$state, user" "user:$unit"; done
         systemctl list-units --type=service --state=running,failed --no-legend --plain |
           while read -r unit _ _ state _; do row "" "${unit%.service}" "$state" "system:$unit"; done
-      } | pick open --header "$(crumb "Services")"
+      } | pick open --header "$(crumb_header "Services")"
     ) || return
 
     unit_menu "${choice%%:*}" "${choice#*:}"
@@ -359,7 +363,7 @@ unit_menu() {
     row "" "Status" "" status
     row "" "Logs" "" logs
     row "" "Restart" "" restart
-  } | pick open --header "$(crumb "Services" "${unit%.service}")") || return
+  } | pick open --header "$(crumb_header "Services" "${unit%.service}")") || return
 
   case $choice in
     status) page "status:${unit%.service}" "${systemctl[@]}" status "$unit" ;;
@@ -388,7 +392,7 @@ network_menu() {
       else
         row "" "Set up Tailscale" "" tailscale-install
       fi
-    } | pick open --header "$(crumb "Network")") || return
+    } | pick open --header "$(crumb_header "Network")") || return
 
     case $choice in
       addresses) page addresses ip -brief address ;;
@@ -448,7 +452,7 @@ storage_menu() {
       else
         row "" "Backups" "not available yet" backups-missing
       fi
-    } | pick open --header "$(crumb "Storage & backups")") || return
+    } | pick open --header "$(crumb_header "Storage & backups")") || return
 
     case $choice in
       disks) page disks lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS ;;
@@ -489,7 +493,7 @@ agent_apikey_menu() {
     row "" "MiniMax" "API key via OpenCode" minimax
     row "" "Synthetic" "API key via OpenCode" synthetic
     row "" "Z.ai" "API key via OpenCode" zai
-  } | pick choose --header "$(crumb "Agent" "API key")") || return 1
+  } | pick choose --header "$(crumb_header "Agent" "API key")") || return 1
 
   add_agent_account "$provider"
 }
@@ -511,7 +515,7 @@ agent_other_menu() {
   # The harnesses omarchy default agent takes, as its metadata lists them.
   agent=$(
     sed -n 's/^# omarchy:args=\[\(.*\)\]$/\1/p' "$(command -v omarchy-default-agent)" | tr '|' '\n' |
-      while read -r name; do row "" "$name" "" "$name"; done | pick choose --header "$(crumb "Agent" "Other harness")"
+      while read -r name; do row "" "$name" "" "$name"; done | pick choose --header "$(crumb_header "Agent" "Other harness")"
   ) || return 1
 
   install_agent "$agent"
@@ -531,7 +535,7 @@ agent_menu() {
         row "" "Pi" "bring your own / multi-provider" pi
         row "" "Copy from desktop" "omarchy agent account copy" copy
         row "" "Other harness…" "all 25 harnesses" other
-      } | pick choose --header "$(crumb "Agent")") || return
+      } | pick choose --header "$(crumb_header "Agent")") || return
 
       case $choice in
         claude | codex | pi) install_agent "$choice"; return ;;
@@ -556,7 +560,7 @@ fleet_menu() {
 printf -v reload 'start:reload-sync:%q --rows-with-updates' "$0"
 printf -v preview_cmd '%q --preview {2}' "$0"
 while :; do
-  choice=$(main_rows | pick open --header "$(crumb)" --bind "$reload" \
+  choice=$(main_rows | pick open --header "$(crumb_header)" --bind "$reload" \
     --preview "$preview_cmd" \
     --preview-window="right:48%:border-left:wrap") || exit 0
 
