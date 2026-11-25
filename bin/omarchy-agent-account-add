@@ -270,11 +270,22 @@ cli_missing() {
   ! PATH=$path type -P "$harness" >/dev/null
 }
 
+npm_backed() {
+  [[ $1 == npm:* || $(mise tool "${1%%\[*}" --backend 2>/dev/null) == npm:* ]]
+}
+
 if cli_missing; then
   say "$(omarchy-i18n agents.installingCli "$name")"
   if omarchy-mise-default-tools declares "$package"; then
-    install_cli env MISE_MINIMUM_RELEASE_AGE=0 mise install "$package"
+    if npm_backed "$package"; then
+      install_cli env MISE_MINIMUM_RELEASE_AGE=0 mise install node "$package"
+    else
+      install_cli env MISE_MINIMUM_RELEASE_AGE=0 mise install "$package"
+    fi
   else
+    if npm_backed "$package" && ! mise where node &>/dev/null; then
+      install_cli env MISE_MINIMUM_RELEASE_AGE=0 mise install node || fail "$(omarchy-i18n agents.installCliFailed "$name")"
+    fi
     install_cli env MISE_MINIMUM_RELEASE_AGE=0 mise use -g "$package"
   fi || fail "$(omarchy-i18n agents.installCliFailed "$name")"
 fi

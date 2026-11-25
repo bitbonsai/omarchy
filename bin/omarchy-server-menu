@@ -141,10 +141,17 @@ pause() {
 }
 
 page() {
-  local out lines rows pad
+  local title=$1
+  shift
+  local out lines rows pad rc=0 less_args=(-R)
   out=$("$@" 2>&1)
   rows=$(tput lines 2>/dev/null || echo 24)
   lines=$(printf '%s\n' "$out" | wc -l)
+  if in_popup; then
+    less_args+=(--lesskey-content=$'#command\nt quit T\n' -P ' q back  ·  t open in tab')
+  else
+    less_args+=(-P ' q back')
+  fi
   {
     printf '\n'
     printf '%s\n' "$out" | sed 's/^/  /'
@@ -153,7 +160,14 @@ page() {
         printf '\n'
       done
     fi
-  } | less -R -P ' (q to return)'
+  } | less "${less_args[@]}" || rc=$?
+
+  if (( rc == 84 )) && in_popup; then
+    local tmp
+    tmp=$(mktemp /tmp/omarchy-page.XXXXXX)
+    printf '%s\n' "$out" >"$tmp"
+    open_tab "$title" "less -R -~ -P ' q close' $(printf '%q' "$tmp"); rm -f $(printf '%q' "$tmp")"
+  fi
 }
 
 main_rows() {
@@ -248,7 +262,7 @@ unit_menu() {
   } | pick open) || return
 
   case $choice in
-    status) page "${systemctl[@]}" status "$unit" ;;
+    status) page "status:${unit%.service}" "${systemctl[@]}" status "$unit" ;;
     logs)
       if in_popup; then
         open_tab "logs:${unit%.service}" "${journal[*]} -u $(printf '%q' "$unit") -f"
@@ -277,10 +291,10 @@ network_menu() {
     } | pick open) || return
 
     case $choice in
-      addresses) page ip -brief address ;;
+      addresses) page addresses ip -brief address ;;
       connections) nmtui ;;
-      firewall) page sudo ufw status verbose ;;
-      tailscale) page tailscale status ;;
+      firewall) page firewall sudo ufw status verbose ;;
+      tailscale) page tailscale tailscale status ;;
       tailscale-install) omarchy-install-service-tailscale; pause ;;
       tunnel) tunnel_setup; pause ;;
     esac
@@ -335,8 +349,8 @@ storage_menu() {
     } | pick open) || return
 
     case $choice in
-      disks) page lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS ;;
-      mounts) page findmnt -t nfs,nfs4,cifs,smb3,fuse.sshfs ;;
+      disks) page disks lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS ;;
+      mounts) page mounts findmnt -t nfs,nfs4,cifs,smb3,fuse.sshfs ;;
       storage-done) omarchy-done mark server-storage ;;
       backup-*) backup "${choice#backup-}" ;;
       backups-missing) echo "Backups are not part of Omarchy Server yet."; pause ;;
@@ -344,21 +358,87 @@ storage_menu() {
   done
 }
 
-agent_menu() {
+install_agent() {
+  local agent=$1
+  if in_popup; then
+    open_tab "agent" "omarchy-default-agent --install $(printf '%q' "$agent") || { echo; read -rsn1 -p 'Press any key to close'; }"
+  fi
+  omarchy-default-agent --install "$agent" || { pause; return 1; }
+}
+
+add_agent_account() {
+  local provider=$1 launch_args=()
+  [[ $provider != "opencode" ]] && launch_args=(--provider "$provider")
+
+  if in_popup; then
+    local launch="omarchy-agent --inline"
+    (( ${#launch_args[@]} )) && launch+=" $(printf '%q ' "${launch_args[@]}")"
+    open_tab "agent" "omarchy-agent-account-add $(printf '%q' "$provider") && exec $launch || { echo; read -rsn1 -p 'Press any key to close'; }"
+  fi
+  omarchy-agent-account-add "$provider" && omarchy-agent --inline "${launch_args[@]}" || pause
+}
+
+agent_apikey_menu() {
+  local provider
+  provider=$({
+    row "" "OpenRouter" "API key via OpenCode" openrouter
+    row "" "Fireworks" "API key via OpenCode" fireworks
+    row "" "DeepSeek" "API key via OpenCode" deepseek
+    row "" "MiniMax" "API key via OpenCode" minimax
+    row "" "Synthetic" "API key via OpenCode" synthetic
+    row "" "Z.ai" "API key via OpenCode" zai
+  } | pick choose) || return 1
+
+  add_agent_account "$provider"
+}
+
+agent_copy_hint() {
+  local target
+  target="$(id -un)@$(hostname -s 2>/dev/null || hostname)"
+  clear
+  printf '\n  %sCopy agent login from your desktop%s\n\n' "$amber" "$reset"
+  printf '  Run this on your Omarchy desktop to transfer your\n'
+  printf '  Claude, Codex, or Grok subscription over SSH:\n\n'
+  printf '    %somarchy agent account copy %s%s\n\n' "$green" "$target" "$reset"
+  printf '  %sCredentials travel over stdin only and never touch disk in transit.%s\n' "$dim" "$reset"
+  pause
+}
+
+agent_other_menu() {
   local agent
+  # The harnesses omarchy default agent takes, as its metadata lists them.
+  agent=$(
+    sed -n 's/^# omarchy:args=\[\(.*\)\]$/\1/p' "$(command -v omarchy-default-agent)" | tr '|' '\n' |
+      while read -r name; do row "" "$name" "" "$name"; done | pick choose
+  ) || return 1
+
+  install_agent "$agent"
+}
+
+agent_menu() {
+  local agent choice
 
   agent=$(omarchy-default-agent)
   if [[ -z $agent ]] || omarchy-cmd-missing "$agent"; then
-    # The harnesses omarchy default agent takes, as its metadata lists them.
-    agent=$(
-      sed -n 's/^# omarchy:args=\[\(.*\)\]$/\1/p' "$(command -v omarchy-default-agent)" | tr '|' '\n' |
-        while read -r name; do row "" "$name" "" "$name"; done | pick choose
-    ) || return
-    if in_popup; then
-      open_tab "agent" "omarchy-default-agent --install $(printf '%q' "$agent") || { echo; read -rsn1 -p 'Press any key to close'; }"
-    fi
-    omarchy-default-agent --install "$agent" || { pause; return; }
-    return
+    while :; do
+      choice=$({
+        row "" "Anthropic" "Claude Code" claude
+        row "" "OpenAI" "Codex" codex
+        row "" "OpenCode Go" "device-code auth, SSH-friendly" opencode
+        row "" "API key" "OpenRouter, Fireworks, DeepSeek…" apikey
+        row "" "Pi" "bring your own / multi-provider" pi
+        row "" "Copy from desktop" "omarchy agent account copy" copy
+        row "" "Other harness…" "all 25 harnesses" other
+      } | pick choose) || return
+
+      case $choice in
+        claude | codex | pi) install_agent "$choice"; return ;;
+        opencode) add_agent_account opencode; return ;;
+        apikey) agent_apikey_menu && return ;;
+        copy) agent_copy_hint ;;
+        other) agent_other_menu && return ;;
+      esac
+    done
   fi
 
   if in_popup; then
