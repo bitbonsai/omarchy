@@ -286,7 +286,7 @@ inventory_podman() {
   local name driver mountpoint options image container unit source fstype secrets network binds=()
 
   if ! command -v podman >/dev/null; then
-    skipped "○ Podman is not installed"
+    command -v docker >/dev/null || skipped "○ Podman is not installed"
     : >"$MANIFEST_BUILD/volumes"
     : >"$MANIFEST_BUILD/images"
     echo "[]" >"$MANIFEST_BUILD/containers.json"
@@ -369,6 +369,129 @@ inventory_podman() {
       skipped "○ Network $network is not saved, create it again with podman network create"
     fi
   done < <(as_owner podman network ls --format '{{.Name}}')
+}
+
+normalize_image_ref() {
+  local img=$1 first
+  if [[ $img != */* ]]; then
+    echo "docker.io/library/$img"
+  else
+    first=${img%%/*}
+    if [[ $first != *.* && $first != *:* && $first != "localhost" ]]; then
+      echo "docker.io/$img"
+    else
+      echo "$img"
+    fi
+  fi
+}
+
+inventory_docker() {
+  local name driver mountpoint options image norm container state source dest rw mtype
+  local port host_port proto env_line cmd_args qfile fstype binds=()
+
+  command -v docker >/dev/null 2>&1 || return 0
+  docker info >/dev/null 2>&1 || return 0
+
+  mkdir -p "$MANIFEST_BUILD/volume-labels" "$MANIFEST_BUILD/docker-quadlets"
+
+  while IFS= read -r name; do
+    [[ -n $name ]] || continue
+    IFS='|' read -r driver mountpoint options < <(docker volume inspect --format '{{.Driver}}|{{.Mountpoint}}|{{len .Options}}' "$name" 2>/dev/null || true)
+    [[ -n $driver ]] || continue
+    if [[ $driver != "local" ]]; then
+      skipped "○ Docker volume $name uses the $driver driver, its data lives elsewhere"
+    elif (( options > 0 )); then
+      skipped "○ Docker volume $name mounts storage from elsewhere through its options, recreate it by hand"
+    elif [[ -d $mountpoint ]]; then
+      item volume "$mountpoint"
+      printf '%s\t%s\n' "$name" "$mountpoint" >>"$MANIFEST_BUILD/volumes"
+      docker volume inspect --format '{{range $k, $v := .Labels}}{{$k}}={{$v}}{{println}}{{end}}' "$name" \
+        >"$MANIFEST_BUILD/volume-labels/$name" 2>/dev/null || true
+      found "Docker volume $name  $(human_size "$mountpoint")"
+    fi
+  done < <(docker volume ls --format '{{.Name}}' 2>/dev/null || true)
+
+  while IFS='|' read -r container state; do
+    [[ -n $container ]] || continue
+    image=$(docker inspect --format '{{.Config.Image}}' "$container" 2>/dev/null || true)
+    [[ -n $image ]] || continue
+    norm=$(normalize_image_ref "$image")
+    if [[ $norm != localhost/* ]] && ! grep -Fxq -- "$norm" "$MANIFEST_BUILD/images" 2>/dev/null; then
+      echo "$norm" >>"$MANIFEST_BUILD/images"
+      found "Image $norm"
+    fi
+
+    qfile="$MANIFEST_BUILD/docker-quadlets/$container.container"
+    {
+      echo "[Unit]"
+      echo "Description=Migrated Docker container $container"
+      echo
+      echo "[Container]"
+      echo "ContainerName=$container"
+      echo "Image=$norm"
+
+      while IFS= read -r port; do
+        [[ -n $port ]] && echo "PublishPort=$port"
+      done < <(docker inspect --format '{{range $p, $conf := .HostConfig.PortBindings}}{{range $conf}}{{if .HostPort}}{{.HostPort}}:{{$p}}{{println}}{{end}}{{end}}{{end}}' "$container" 2>/dev/null || true)
+
+      while IFS='|' read -r mtype source dest rw; do
+        [[ -n $dest ]] || continue
+        if [[ $mtype == "bind" && -n $source ]]; then
+          binds+=("$source")
+          if [[ $rw == "false" ]]; then
+            echo "Volume=$source:$dest:ro,Z"
+          else
+            echo "Volume=$source:$dest:Z"
+          fi
+        elif [[ $mtype == "volume" && -n $source ]]; then
+          if [[ $rw == "false" ]]; then
+            echo "Volume=$source:$dest:ro"
+          else
+            echo "Volume=$source:$dest"
+          fi
+        fi
+      done < <(docker inspect --format '{{range .Mounts}}{{.Type}}|{{if eq .Type "volume"}}{{.Name}}{{else}}{{.Source}}{{end}}|{{.Destination}}|{{.RW}}{{println}}{{end}}' "$container" 2>/dev/null || true)
+
+      while IFS= read -r env_line; do
+        [[ -n $env_line && $env_line != PATH=* ]] && echo "Environment=$env_line"
+      done < <(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null || true)
+
+      cmd_args=$(docker inspect --format '{{range .Config.Cmd}}{{.}} {{end}}' "$container" 2>/dev/null | sed 's/ *$//' || true)
+      [[ -n $cmd_args ]] && echo "Exec=$cmd_args"
+
+      echo
+      echo "[Service]"
+      echo "Restart=always"
+      echo
+      echo "[Install]"
+      echo "WantedBy=default.target"
+    } >"$qfile"
+
+    if [[ $state == "running" ]]; then
+      echo "$container.service" >>"$MANIFEST_BUILD/active-units"
+      echo yes >"$MANIFEST_BUILD/linger"
+    fi
+    found "Docker container $container ($image) → Podman Quadlet"
+  done < <(docker ps --all --format '{{.Names}}|{{.State}}' 2>/dev/null || true)
+
+  if (( ${#binds[@]} > 0 )); then
+    while IFS= read -r source; do
+      [[ -n $source ]] || continue
+      if [[ $source == /proc/* || $source == /sys/* || $source == /dev/* || $source == /run/* || $source == /tmp/* || $source == /var/run/* ]]; then
+        continue
+      elif [[ ! -e $source ]]; then
+        skipped "⚠ Bind mount $(shown "$source") does not exist"
+        continue
+      fi
+      fstype=$(findmnt -no FSTYPE -T "$source" 2>/dev/null || true)
+      if is_network_fs "$fstype"; then
+        skipped "○ Bind mount $(shown "$source") is on a $fstype share, so it stays there"
+      elif [[ ! -S $source ]]; then
+        item bind "$source"
+        found "Bind mount $(shown "$source")  $(human_size "$source")"
+      fi
+    done < <(printf '%s\n' "${binds[@]}" | sort -u)
+  fi
 }
 
 inventory_cloudflared() {
@@ -468,6 +591,7 @@ container_unit() {
 
 STOPPED_UNITS=()
 STOPPED_CONTAINERS=()
+STOPPED_DOCKER=()
 
 start_again() {
   local unit container
@@ -477,21 +601,32 @@ start_again() {
   for container in "${STOPPED_CONTAINERS[@]}"; do
     as_owner podman start "$container" >/dev/null || echo "⚠ Could not start $container again" >&2
   done
+  for container in "${STOPPED_DOCKER[@]}"; do
+    docker start "$container" >/dev/null || echo "⚠ Could not start Docker container $container again" >&2
+  done
   STOPPED_UNITS=()
   STOPPED_CONTAINERS=()
+  STOPPED_DOCKER=()
 }
 
 stop_containers() {
   local container unit
-  while IFS='|' read -r container unit; do
-    [[ -n $container ]] || continue
-    unit=$(container_unit "$container" "$unit")
-    if [[ -n $unit ]]; then
-      [[ " ${STOPPED_UNITS[*]} " == *" $unit "* ]] || STOPPED_UNITS+=("$unit")
-    else
-      STOPPED_CONTAINERS+=("$container")
-    fi
-  done < <(as_owner podman ps --format '{{.Names}}|{{.Label "PODMAN_SYSTEMD_UNIT"}}')
+  if command -v podman >/dev/null 2>&1; then
+    while IFS='|' read -r container unit; do
+      [[ -n $container ]] || continue
+      unit=$(container_unit "$container" "$unit")
+      if [[ -n $unit ]]; then
+        [[ " ${STOPPED_UNITS[*]} " == *" $unit "* ]] || STOPPED_UNITS+=("$unit")
+      else
+        STOPPED_CONTAINERS+=("$container")
+      fi
+    done < <(as_owner podman ps --format '{{.Names}}|{{.Label "PODMAN_SYSTEMD_UNIT"}}')
+  fi
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    while IFS= read -r container; do
+      [[ -n $container ]] && STOPPED_DOCKER+=("$container")
+    done < <(docker ps --format '{{.Names}}' 2>/dev/null || true)
+  fi
 
   for unit in "${STOPPED_UNITS[@]}"; do
     echo "Stopping $unit"
@@ -500,6 +635,10 @@ stop_containers() {
   for container in "${STOPPED_CONTAINERS[@]}"; do
     echo "Stopping $container"
     as_owner podman stop "$container" >/dev/null
+  done
+  for container in "${STOPPED_DOCKER[@]}"; do
+    echo "Stopping Docker container $container"
+    docker stop "$container" >/dev/null
   done
 }
 
@@ -525,6 +664,7 @@ create_backup() {
   inventory_unit_files
   inventory_referenced_files
   inventory_podman
+  inventory_docker
   inventory_cloudflared
   inventory_mounts
   dedupe_items
@@ -848,6 +988,34 @@ restore_user_units() {
   done <"$M/active-units"
 }
 
+restore_docker_quadlets() {
+  local qdir="$OWNER_HOME/.config/containers/systemd" src base dest tmp
+  [[ -d $M/docker-quadlets ]] || return 0
+  shopt -s nullglob
+  local files=("$M/docker-quadlets"/*.container)
+  shopt -u nullglob
+  (( ${#files[@]} > 0 )) || return 0
+
+  mkdir -p -- "$qdir"
+  chown -R "$OWNER_UID:$OWNER_GID" -- "$OWNER_HOME/.config/containers"
+  for src in "${files[@]}"; do
+    base=${src##*/}
+    dest="$qdir/$base"
+    tmp=$(mktemp)
+    if [[ -n $OLD_HOME && $OLD_HOME != "$OWNER_HOME" ]]; then
+      sed "s|Volume=${OLD_HOME}/|Volume=${OWNER_HOME}/|g; s|Volume=${OLD_HOME}:|Volume=${OWNER_HOME}:|g" "$src" >"$tmp"
+    else
+      cp -- "$src" "$tmp"
+    fi
+    chmod 644 "$tmp"
+    chown "$OWNER_UID:$OWNER_GID" "$tmp"
+    local status=0
+    place_file "$tmp" "$dest" || status=$?
+    rm -f -- "$tmp"
+    report_place "$status" "Quadlet $base (converted from Docker)"
+  done
+}
+
 restore_backup() {
   local old_user old_uid old_gid name
   if [[ ! -f $REPO/config ]]; then
@@ -889,6 +1057,7 @@ restore_backup() {
 
   restore_ranges
   restore_items
+  restore_docker_quadlets
   restore_volumes
   if [[ $old_uid != "$OWNER_UID" || $old_gid != "$OWNER_GID" ]]; then
     chown -hR --from="$old_uid" "$OWNER_UID" -- "$OWNER_HOME"
