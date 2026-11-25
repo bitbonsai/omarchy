@@ -141,7 +141,7 @@ pause() {
 }
 
 page() {
-  "$@" 2>&1 | less -RFX
+  "$@" 2>&1 | less -R -P ' (q to return)'
 }
 
 main_rows() {
