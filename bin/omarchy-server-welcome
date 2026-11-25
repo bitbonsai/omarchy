@@ -1,0 +1,132 @@
+#!/bin/bash
+
+# omarchy:summary=Display the Omarchy Server login welcome banner and clear
+# omarchy:examples=omarchy-server-welcome | omarchy-server-welcome --delay 3
+
+set -uo pipefail
+
+delay=3
+while (($#)); do
+  case "$1" in
+    --delay)
+      delay=${2:-3}
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+[[ -t 1 ]] || exit 0
+
+cols=$(tput cols 2>/dev/null || echo 80)
+rows=$(tput lines 2>/dev/null || echo 24)
+logo_file="${OMARCHY_PATH:-$HOME/.local/share/omarchy}/logo.txt"
+
+amber=$'\e[38;2;224;175;104m'
+green=$'\e[38;2;158;206;106m'
+fg=$'\e[38;2;192;202;245m'
+muted=$'\e[38;2;120;124;153m'
+dim=$'\e[38;2;86;95;137m'
+bold=$'\e[1m'
+reset=$'\e[0m'
+hide_cursor=$'\e[?25l'
+show_cursor=$'\e[?25h'
+
+cleanup() {
+  printf '%s%s' "$reset" "$show_cursor"
+}
+trap cleanup EXIT
+
+# Print a line centered horizontally based on its visible (ANSI-stripped) width.
+print_center() {
+  local line=$1
+  local plain
+  plain=$(printf '%s' "$line" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
+  local width=${#plain}
+  local pad=0
+  (( cols > width )) && pad=$(( (cols - width) / 2 ))
+  printf '%*s%s\n' "$pad" "" "$line"
+}
+
+user=${USER:-$(id -un)}
+host=$(hostname -s 2>/dev/null || hostname)
+version=$(omarchy-version 2>/dev/null || true)
+
+if [[ -n ${SSH_CONNECTION:-} ]]; then
+  auth="${green}SSH key auth${reset}"
+else
+  auth="${muted}local console${reset}"
+fi
+
+# Gather compact status lines (skip the first "Omarchy Server ..." header line
+# and the "Run om to ..." footer since we show our own branded header & hint).
+status_lines=()
+if command -v omarchy-status >/dev/null 2>&1; then
+  while IFS= read -r line; do
+    [[ -z $line ]] && continue
+    [[ $line == Omarchy\ Server* ]] && continue
+    [[ $line == *Run\ *om* ]] && continue
+    line=${line//✓/${green}✓${fg}}
+    line=${line//⚠/${amber}⚠${fg}}
+    line=${line//○/${amber}○${muted}}
+    status_lines+=("${fg}${line}${reset}")
+  done < <(omarchy-status 2>/dev/null)
+fi
+
+logo_lines=()
+if (( cols >= 84 )) && [[ -r $logo_file ]]; then
+  mapfile -t logo_lines <"$logo_file"
+fi
+
+# Vertically center the splash block in the terminal.
+block_height=$(( ${#logo_lines[@]} + 6 + ${#status_lines[@]} ))
+(( ${#logo_lines[@]} == 0 )) && block_height=$(( block_height + 1 ))
+top_pad=2
+(( rows > block_height + 2 )) && top_pad=$(( (rows - block_height) / 2 ))
+
+printf '%s\033[2J\033[H' "$hide_cursor"
+for (( i = 0; i < top_pad; i++ )); do
+  printf '\n'
+done
+
+if (( ${#logo_lines[@]} > 0 )); then
+  # Center the 81-col logo as a single block so relative indentation stays exact.
+  logo_pad=0
+  (( cols > 81 )) && logo_pad=$(( (cols - 81) / 2 ))
+  for line in "${logo_lines[@]}"; do
+    printf '%*s%s%s%s\n' "$logo_pad" "" "$amber" "$line" "$reset"
+  done
+  printf '\n'
+  print_center "${amber}${bold}S E R V E R${reset}${version:+  ${dim}·${reset}  ${muted}${version}${reset}}"
+else
+  print_center "${amber}${bold}OMARCHY SERVER${reset}${version:+  ${dim}·${reset}  ${muted}${version}${reset}}"
+fi
+
+printf '\n'
+print_center "${muted}Logged in as ${fg}${bold}${user}@${host}${reset}  ${dim}·${reset}  ${auth}"
+
+if (( ${#status_lines[@]} > 0 )); then
+  printf '\n'
+  for line in "${status_lines[@]}"; do
+    print_center "$line"
+  done
+fi
+
+printf '\n'
+if (( delay > 0 )); then
+  for (( remaining = delay; remaining > 0; remaining-- )); do
+    printf '\r\033[2K'
+    line="${dim}om for menu  ·  Ctrl+Space m anywhere  ·  clearing in ${remaining}s${reset}"
+    plain="om for menu  ·  Ctrl+Space m anywhere  ·  clearing in ${remaining}s"
+    pad=0
+    (( cols > ${#plain} )) && pad=$(( (cols - ${#plain}) / 2 ))
+    printf '%*s%s' "$pad" "" "$line"
+    if IFS= read -rsn1 -t 1 _ </dev/tty 2>/dev/null; then
+      break
+    fi
+  done
+fi
+
+printf '\033[2J\033[H'

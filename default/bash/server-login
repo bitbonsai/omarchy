@@ -13,7 +13,14 @@ case $- in
           if ! infocmp "${TERM:-}" >/dev/null 2>&1; then
             export TERM=xterm-256color
           fi
-          exec tmux -f "$_omarchy_tmux_conf" new-session -A -s omarchy
+          if tmux has-session -t omarchy 2>/dev/null; then
+            exec tmux -f "$_omarchy_tmux_conf" attach-session -t omarchy
+          elif [ -z "${OMARCHY_NO_WELCOME:-}" ] && command -v omarchy-server-welcome >/dev/null 2>&1; then
+            exec tmux -f "$_omarchy_tmux_conf" new-session -s omarchy -n bash \
+              "omarchy-server-welcome; exec \"${SHELL:-/bin/bash}\""
+          else
+            exec tmux -f "$_omarchy_tmux_conf" new-session -s omarchy
+          fi
         fi
         unset _omarchy_tmux_conf
       fi
