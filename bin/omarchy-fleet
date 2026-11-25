@@ -117,7 +117,7 @@ preview_peer() {
 
   local out
   if out=$(ssh -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=accept-new -i "$FLEET_KEY" "$host" \
-    "bash -lc 'omarchy-server-status 2>/dev/null || { uname -sr; uptime -p; df -h / | tail -1; }'" 2>/dev/null); then
+    "bash -lc 'om status 2>/dev/null || omarchy-server-status 2>/dev/null || { uname -sr; uptime -p; df -h / | tail -1; }'" 2>/dev/null); then
     printf '%s\n' "$out"
   else
     printf '  %s● Online%s\n\n' "$green" "$reset"

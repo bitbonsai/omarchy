@@ -12,7 +12,7 @@ The installer pacstraps `install/omarchy-server.packages` in place of `install/o
 
 ## Login
 
-`/etc/profile.d/omarchy.sh` sources `default/bash/server-login`, which runs `omarchy-server-status` for an interactive login at a terminal. Commands over SSH, scp, sftp, root shells and tmux panes stay quiet. The lines use ✓ for working, ⚠ for a problem and ○ for a setup step still to do; `omarchy-server-setup-steps` lists those steps (storage, backups, agent).
+`/etc/profile.d/omarchy.sh` sources `default/bash/server-login`, which runs `om status` (`omarchy-status`) for an interactive login at a terminal. Commands over SSH, scp, sftp, root shells and tmux panes stay quiet. The lines use ✓ for working, ⚠ for a problem and ○ for a setup step still to do; `omarchy-server-setup-steps` lists those steps (storage, backups, agent).
 
 ## Updates
 

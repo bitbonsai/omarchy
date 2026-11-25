@@ -1,0 +1,110 @@
+#!/bin/bash
+
+# omarchy:summary=Print Omarchy Server health and setup status
+# omarchy:examples=om status | omarchy status
+
+# ✓ working, ⚠ a problem, ○ not set up. A problem gets a line of its own, and
+# the last line points at om, where each one is looked at or set up.
+
+set -uo pipefail
+
+if [[ -t 1 ]]; then
+  green=$'\e[32m' orange=$'\e[33m' dim=$'\e[2m' reset=$'\e[0m'
+else
+  green="" orange="" dim="" reset=""
+fi
+
+checks=()
+problems=()
+
+# "a", "a and b", "a, b and c"
+join_list() {
+  local last=${!#}
+
+  if (( $# == 1 )); then
+    echo "$1"
+  else
+    local IFS=,
+    local rest="${*:1:$# - 1}"
+    echo "${rest//,/, } and $last"
+  fi
+}
+
+check() {
+  local name=$1 problem=${2:-}
+
+  if [[ -z $problem ]]; then
+    checks+=("${green}✓${reset} $name")
+  else
+    checks+=("${orange}⚠${reset} $name")
+    problems+=("$problem")
+  fi
+}
+
+# One systemctl for the three services.
+mapfile -t states < <(systemctl is-active sshd.service ufw.service tailscaled.service 2>/dev/null)
+
+[[ ${states[0]:-} == "active" ]] && check SSH || check SSH "SSH is not running"
+
+if [[ ${states[1]:-} == "active" ]] && grep -qx "ENABLED=yes" /etc/ufw/ufw.conf 2>/dev/null; then
+  check Firewall
+else
+  check Firewall "The firewall is off"
+fi
+
+disk_used=$(df --output=pcent / | tail -1 | tr -dc '0-9')
+if (( disk_used < 90 )); then
+  check Disk
+else
+  check Disk "The system disk is ${disk_used}% full"
+fi
+
+if omarchy-cmd-present podman; then
+  if grep -q "^$USER:" /etc/subuid 2>/dev/null; then
+    check Containers
+  else
+    check Containers "Rootless containers need subordinate IDs for $USER in /etc/subuid"
+  fi
+fi
+
+# Tailscale counts once it is set up to start at boot.
+if systemctl is-enabled --quiet tailscaled.service 2>/dev/null; then
+  if [[ ${states[2]:-} == "active" ]] && timeout 2 tailscale status >/dev/null 2>&1; then
+    check Tailscale
+  else
+    check Tailscale "Tailscale is not connected"
+  fi
+fi
+
+omarchy-server-update-watch compare
+down=()
+while read -r _ name; do
+  name=$(printf '%b' "$name")
+  down+=("${name%.service}")
+done < <(omarchy-server-update-watch down)
+if (( ${#down[@]} )); then
+  (( ${#down[@]} == 1 )) && verb=is || verb=are
+  problems+=("$(join_list "${down[@]}") ran before the update and $verb down now")
+fi
+
+mapfile -t not_set_up < <(omarchy-server-setup-steps)
+
+version=$(omarchy-version 2>/dev/null)
+echo "Omarchy Server${version:+ $version}"
+printf -v row '%s  ' "${checks[@]}"
+echo "${row%  }"
+for problem in "${problems[@]}"; do
+  echo "${orange}⚠${reset} $problem"
+done
+
+if (( ${#not_set_up[@]} )); then
+  list=$(join_list "${not_set_up[@]}")
+  (( ${#not_set_up[@]} == 1 )) && verb=is || verb=are
+  echo "${orange}○${reset} ${list^} $verb not set up"
+fi
+
+if (( ${#problems[@]} )); then
+  echo "${dim}Run ${reset}om${dim} to look.${reset}"
+elif (( ${#not_set_up[@]} )); then
+  echo "${dim}Run ${reset}om${dim} to finish.${reset}"
+fi

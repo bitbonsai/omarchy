@@ -17,7 +17,7 @@ case $- in
         fi
         unset _omarchy_tmux_conf
       fi
-      omarchy-server-status
+      omarchy-status
     fi
     ;;
 esac
