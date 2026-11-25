@@ -140,8 +140,8 @@ pick_peer() {
     while IFS=$'\t' read -r host state _ os; do
       format_row "$host" "$state" "$os"
     done <<<"$peer_list" |
-      fzf --ansi --layout=reverse --height=100% --info=hidden --no-separator \
-        --delimiter=$'\t' --with-nth=1 --prompt="" --ghost="Go…" --pointer="▌" --gutter=" " \
+      fzf --ansi --layout=reverse --height=100% --padding="0,1" --info=hidden --no-separator \
+        --delimiter=$'\t' --with-nth=1 --prompt="❯ " --ghost="Go…" --pointer="▌" --gutter=" " \
         --color="pointer:#e0af68,fg+:#e0af68,bg+:#24283b,hl:#e0af68,hl+:#e0af68,border:#3b3526,separator:#24283b,prompt:#e0af68,ghost:#565f89" \
         --preview "$preview_cmd" --preview-window="right:48%:border-left:wrap" \
         --footer="↵ shell     ctrl-a agent     ctrl-u update     esc back" \

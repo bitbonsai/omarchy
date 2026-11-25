@@ -127,8 +127,8 @@ pick() {
   local enter=$1
   shift
 
-  fzf --ansi --layout=reverse --height=100% --info=hidden --no-separator \
-    --delimiter=$'\t' --with-nth=1 --prompt="" --ghost="Go…" --pointer="▌" --gutter=" " \
+  fzf --ansi --layout=reverse --height=100% --padding="0,1" --info=hidden --no-separator \
+    --delimiter=$'\t' --with-nth=1 --prompt="❯ " --ghost="Go…" --pointer="▌" --gutter=" " \
     --color="pointer:#e0af68,fg+:#e0af68,bg+:#24283b,hl:#e0af68,hl+:#e0af68,border:#3b3526,separator:#24283b,prompt:#e0af68,ghost:#565f89" \
     --footer="type to filter     ↵ $enter     esc back" "$@" |
     cut -f2
@@ -141,7 +141,19 @@ pause() {
 }
 
 page() {
-  "$@" 2>&1 | less -R -P ' (q to return)'
+  local out lines rows pad
+  out=$("$@" 2>&1)
+  rows=$(tput lines 2>/dev/null || echo 24)
+  lines=$(printf '%s\n' "$out" | wc -l)
+  {
+    printf '\n'
+    printf '%s\n' "$out" | sed 's/^/  /'
+    if (( lines + 2 < rows )); then
+      for (( pad = lines + 2; pad < rows; pad++ )); do
+        printf '\n'
+      done
+    fi
+  } | less -R -P ' (q to return)'
 }
 
 main_rows() {
