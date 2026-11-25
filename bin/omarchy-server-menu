@@ -322,7 +322,7 @@ storage_menu() {
     choice=$({
       row "" "Disks" "" disks
       row "" "Network mounts" "" mounts
-      if omarchy-server-setup-steps | grep -qx storage; then
+      if grep -qx storage <<<"$(omarchy-server-setup-steps)"; then
         row "" "No network storage here" "marks storage as set up" storage-done
       fi
       if omarchy-cmd-present omarchy-backup; then
