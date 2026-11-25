@@ -127,8 +127,9 @@ pick() {
   local enter=$1
   shift
 
-  fzf --ansi --layout=reverse --height=~100% --info=hidden --no-separator \
+  fzf --ansi --layout=reverse --height=100% --info=hidden --no-separator \
     --delimiter=$'\t' --with-nth=1 --prompt="" --ghost="Go…" --pointer="▌" --gutter=" " \
+    --color="pointer:#e0af68,fg+:#e0af68,bg+:#24283b,hl:#e0af68,hl+:#e0af68,border:#3b3526,separator:#24283b,prompt:#e0af68,ghost:#565f89" \
     --footer="type to filter     ↵ $enter     esc back" "$@" |
     cut -f2
 }
@@ -359,7 +360,7 @@ printf -v preview_cmd '%q --preview {2}' "$0"
 while :; do
   choice=$(main_rows | pick open --bind "$reload" \
     --preview "$preview_cmd" \
-    --preview-window="right:52%:border-left:wrap,<78(hidden)") || exit 0
+    --preview-window="right:48%:border-left:wrap") || exit 0
 
   case $choice in
     setup) setup_menu ;;

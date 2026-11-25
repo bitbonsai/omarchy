@@ -8,7 +8,7 @@ set -euo pipefail
 
 popup() {
   local cmd=$1
-  exec tmux display-popup -E -w 78% -h 76% -b rounded -S "fg=#3b3526" \
+  exec tmux display-popup -E -w 84% -h 76% -b rounded -S "fg=#3b3526" \
     "OMARCHY_IN_POPUP=1 $cmd"
 }
 
