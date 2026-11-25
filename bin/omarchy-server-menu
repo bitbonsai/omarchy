@@ -354,7 +354,11 @@ agent_menu() {
       sed -n 's/^# omarchy:args=\[\(.*\)\]$/\1/p' "$(command -v omarchy-default-agent)" | tr '|' '\n' |
         while read -r name; do row "" "$name" "" "$name"; done | pick choose
     ) || return
+    if in_popup; then
+      open_tab "agent" "omarchy-default-agent --install $(printf '%q' "$agent") || { echo; read -rsn1 -p 'Press any key to close'; }"
+    fi
     omarchy-default-agent --install "$agent" || { pause; return; }
+    return
   fi
 
   if in_popup; then

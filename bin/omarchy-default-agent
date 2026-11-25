@@ -179,7 +179,7 @@ if ! agent_install; then
   exit 1
 fi
 
-if [[ $agent == "claude" ]]; then
+if [[ $agent == "claude" && $(omarchy-edition 2>/dev/null || true) != "server" ]]; then
   omarchy-install-chromium-claude 2>/dev/null || true
 fi
 
