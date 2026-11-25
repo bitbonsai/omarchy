@@ -136,8 +136,58 @@ pick() {
 
 pause() {
   echo
-  read -rsn1 -p "Press any key to go back"
+  read -rsn1 -p "  Press any key to go back"
   echo
+}
+
+run_padded() {
+  if ! in_popup || ! command -v python3 >/dev/null 2>&1; then
+    "$@"
+    return
+  fi
+
+  clear
+  python3 -c '
+import fcntl, os, pty, re, select, struct, sys, termios, tty
+
+if not sys.stdin.isatty() or not sys.stdout.isatty():
+    os.execvp(sys.argv[1], sys.argv[1:])
+
+ws = fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, b"\x00" * 8)
+rows, cols, _, _ = struct.unpack("HHHH", ws)
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(sys.argv[1], sys.argv[1:])
+
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", max(5, rows - 2), max(20, cols - 4), 0, 0))
+old = termios.tcgetattr(sys.stdin.fileno())
+tty.setraw(sys.stdin.fileno())
+os.write(sys.stdout.fileno(), b"\r\n  ")
+try:
+    while True:
+        r, _, _ = select.select([fd, sys.stdin.fileno()], [], [])
+        if fd in r:
+            try:
+                data = os.read(fd, 4096)
+            except OSError:
+                break
+            if not data:
+                break
+            out = re.sub(rb"\r\n|\r|\n", lambda m: m.group(0) + b"  ", data)
+            os.write(sys.stdout.fileno(), out)
+        if sys.stdin.fileno() in r:
+            data = os.read(sys.stdin.fileno(), 1024)
+            if not data:
+                break
+            os.write(fd, data)
+finally:
+    termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old)
+    os.write(sys.stdout.fileno(), b"\r")
+    os.close(fd)
+
+_, status = os.waitpid(pid, 0)
+sys.exit(os.waitstatus_to_exitcode(status))
+' "$@"
 }
 
 page() {
@@ -270,7 +320,7 @@ unit_menu() {
         "${journal[@]}" -u "$unit" -e
       fi
       ;;
-    restart) "${restart[@]}" restart "$unit"; pause ;;
+    restart) run_padded "${restart[@]}" restart "$unit"; pause ;;
   esac
 }
 
@@ -295,7 +345,7 @@ network_menu() {
       connections) nmtui ;;
       firewall) page firewall sudo ufw status verbose ;;
       tailscale) page tailscale tailscale status ;;
-      tailscale-install) omarchy-install-service-tailscale; pause ;;
+      tailscale-install) run_padded omarchy-install-service-tailscale; pause ;;
       tunnel) tunnel_setup; pause ;;
     esac
   done
@@ -303,9 +353,9 @@ network_menu() {
 
 # cloudflared is installed only for the owner who wants a tunnel.
 tunnel_setup() {
-  omarchy-pkg-add cloudflared || return
-  echo "Sign in to Cloudflare to create the tunnel."
-  cloudflared tunnel login
+  run_padded omarchy-pkg-add cloudflared || return
+  printf '\n  Sign in to Cloudflare to create the tunnel.\n'
+  run_padded cloudflared tunnel login
 }
 
 # Backups go through omarchy backup, pre-filling the last used restic
@@ -317,13 +367,13 @@ backup() {
   repo_file="$state_dir/backup-repo"
   [[ -r $repo_file ]] && last_repo=$(<"$repo_file")
 
-  repository=$(gum input --prompt "Backup repository: " --placeholder "/mnt/nas/omarchy-backup" --value "$last_repo") || return
+  repository=$(gum input --padding="1 2" --prompt "Backup repository: " --placeholder "/mnt/nas/omarchy-backup" --value "$last_repo") || return
   [[ -n $repository ]] || return
 
   mkdir -p "$state_dir"
   printf '%s\n' "$repository" >"$repo_file"
 
-  if omarchy-backup "$action" "$repository" && [[ $action == "create" ]]; then
+  if run_padded omarchy-backup "$action" "$repository" && [[ $action == "create" ]]; then
     omarchy-done mark server-backups
   fi
   pause
@@ -353,7 +403,7 @@ storage_menu() {
       mounts) page mounts findmnt -t nfs,nfs4,cifs,smb3,fuse.sshfs ;;
       storage-done) omarchy-done mark server-storage ;;
       backup-*) backup "${choice#backup-}" ;;
-      backups-missing) echo "Backups are not part of Omarchy Server yet."; pause ;;
+      backups-missing) clear; printf '\n  Backups are not part of Omarchy Server yet.\n'; pause ;;
     esac
   done
 }
