@@ -62,6 +62,30 @@ actual=$("$fleet" list)
 [[ $actual == "$expected" ]] || fail "omarchy fleet list orders online peers first and skips Mullvad nodes" "$actual"
 pass "omarchy fleet list orders online peers first and skips Mullvad nodes"
 
+# Interactive TTY list adds green/red status dots and colors the status label.
+tty_out=$(python3 -c '
+import os, pty, select, subprocess, sys
+m, s = pty.openpty()
+p = subprocess.Popen([sys.argv[1], "list"], stdout=s, stderr=s)
+os.close(s)
+out = bytearray()
+while True:
+    r, _, _ = select.select([m], [], [], 2.0)
+    if not r: break
+    try:
+        chunk = os.read(m, 4096)
+        if not chunk: break
+        out.extend(chunk)
+    except OSError:
+        break
+p.wait()
+os.close(m)
+sys.stdout.buffer.write(out)
+' "$fleet")
+[[ $tty_out == *$'\e[32m●\e[0m laptop'*$'\e[32monline'* && $tty_out == *$'\e[31m●\e[0m minipc'*$'\e[31moffline'* ]] ||
+  fail "omarchy fleet list renders green/red dots and colored status on a TTY" "$tty_out"
+pass "omarchy fleet list renders green/red dots and colored status on a TTY"
+
 # Disconnected Tailscale fails with a clear message.
 if out=$(TAILSCALE_STATE=Stopped "$fleet" list 2>&1); then
   fail "omarchy fleet refuses to list when Tailscale is disconnected"

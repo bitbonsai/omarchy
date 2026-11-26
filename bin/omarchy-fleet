@@ -14,7 +14,7 @@ set -euo pipefail
 
 FLEET_KEY="${OMARCHY_FLEET_KEY:-$HOME/.ssh/omarchy_fleet}"
 
-green=$'\e[32m' amber=$'\e[33m' dim=$'\e[2m' reset=$'\e[0m'
+green=$'\e[32m' red=$'\e[31m' amber=$'\e[33m' dim=$'\e[2m' reset=$'\e[0m'
 
 in_popup() {
   [[ -n ${OMARCHY_IN_POPUP:-} && -n ${TMUX:-} ]]
@@ -69,15 +69,26 @@ peers() {
 }
 
 format_row() {
-  local host=$1 state=$2 os=${3:-} pad=$(( 30 - ${#1} )) label=$state
+  local host=$1 state=$2 os=${3:-} pad=$(( 28 - ${#1} )) label=$state
   (( pad < 2 )) && pad=2
   [[ -n $os ]] && label="$state · $os"
 
   if [[ $state == "online" ]]; then
-    printf '%s%*s%s%s%s\t%s\t%s\n' "$host" "$pad" "" "$green" "$label" "$reset" "$host" "$state"
+    printf '%s●%s %s%*s%s%s%s\t%s\t%s\n' "$green" "$reset" "$host" "$pad" "" "$green" "$label" "$reset" "$host" "$state"
   else
-    printf '%s%s%*s%s%s\t%s\t%s\n' "$dim" "$host" "$pad" "" "$label" "$reset" "$host" "$state"
+    printf '%s●%s %s%s%*s%s%s\t%s\t%s\n' "$red" "$reset" "$dim" "$host" "$pad" "" "$label" "$reset" "$host" "$state"
   fi
+}
+
+format_list() {
+  local host state ip
+  while IFS=$'\t' read -r host state ip _; do
+    if [[ $state == "online" ]]; then
+      printf '%s●%s %-20s %s%-8s%s %s%s%s\n' "$green" "$reset" "$host" "$green" "$state" "$reset" "$dim" "$ip" "$reset"
+    else
+      printf '%s●%s %-20s %s%-8s%s %s%s%s\n' "$red" "$reset" "$host" "$red" "$state" "$reset" "$dim" "$ip" "$reset"
+    fi
+  done
 }
 
 connect() {
@@ -189,6 +200,8 @@ case $cmd in
     peer_list=$(peers) || exit 1
     if [[ -z $peer_list ]]; then
       echo "No other machines on Tailscale."
+    elif [[ -t 1 ]]; then
+      format_list <<<"$peer_list"
     else
       cut -f1-3 <<<"$peer_list"
     fi
