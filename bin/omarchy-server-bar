@@ -1,11 +1,13 @@
 #!/bin/bash
 
-# omarchy:summary=Render the Omarchy Server tmux bottom status bar (right side)
+# omarchy:summary=Render and handle interactions for the Omarchy Server tmux status bar
 # omarchy:hidden=true
 
-# Called by tmux every few seconds (status-interval 5). Kept fast: reads /proc
-# and df directly, uses a 1s timeout for tailscale, and falls back to plain
-# ASCII on Linux TTY ($TERM=linux) or when OMARCHY_ASCII=1.
+# Called by tmux every few seconds (status-interval 5) to render the right side
+# of the bottom status bar, and invoked on mouse click or keyboard bar-focus
+# (`--open <id>`, `--focus <cmd>`, `--keys`). Kept fast: reads /proc and df
+# directly, uses a 1s timeout for tailscale, and falls back to plain ASCII on
+# Linux TTY ($TERM=linux) or when OMARCHY_ASCII=1.
 
 set -uo pipefail
 
@@ -16,14 +18,201 @@ fi
 
 bg="#13141c"
 
-pill() {
-  local pbg=$1 pfg=$2 text=$3
-  if (( ascii )); then
-    printf '#[bg=%s,fg=%s] %s #[bg=%s] ' "$pbg" "$pfg" "$text" "$bg"
+tailnet_connected() {
+  command -v tailscale >/dev/null 2>&1 || return 1
+  local st
+  st=$(timeout 1 tailscale status --self --json 2>/dev/null | jq -r '.BackendState // ""' 2>/dev/null || true)
+  [[ $st == "Running" ]]
+}
+
+collect_state() {
+  failed_sys=$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l)
+  failed_usr=$(systemctl --user --failed --no-legend --plain 2>/dev/null | wc -l)
+  failed=$(( failed_sys + failed_usr ))
+
+  disk_pct=$(df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9')
+  disk_pct=${disk_pct:-0}
+
+  reboot_needed=0
+  if [[ ! -d "/lib/modules/$(uname -r)" ]]; then
+    reboot_needed=1
+  fi
+
+  alerts=0
+  (( failed > 0 || disk_pct >= 85 || reboot_needed )) && alerts=1
+
+  ts_up=0
+  if (( ! alerts )) && tailnet_connected; then
+    ts_up=1
+  fi
+}
+
+visible_ids() {
+  collect_state
+  local ids=(host)
+  if (( alerts )); then
+    (( failed > 0 )) && ids+=(failed)
+    (( disk_pct >= 85 )) && ids+=(disk)
+    (( reboot_needed )) && ids+=(reboot)
   else
-    printf '#[fg=%s,bg=%s]#[bg=%s,fg=%s]%s#[fg=%s,bg=%s] ' \
+    (( ts_up )) && ids+=(fleet)
+    ids+=(telemetry)
+  fi
+  ids+=(om help)
+  printf '%s\n' "${ids[@]}"
+}
+
+popup() {
+  local w=$1 h=$2 cmd=$3
+  shift 3
+  tmux display-popup -E -w "$w" -h "$h" -b rounded -S "fg=#3b3526" "$@" \
+    "OMARCHY_IN_POPUP=1 $cmd"
+}
+
+open_action() {
+  local id=${1:-}
+  case $id in
+    host)
+      if tailnet_connected; then
+        popup 84% 76% "omarchy-fleet"
+      else
+        popup 76% 62% "omarchy-server-status; echo; read -rsn1 -p 'Press any key to close'"
+      fi
+      ;;
+    fleet)
+      popup 84% 76% "omarchy-fleet"
+      ;;
+    om)
+      popup 84% 76% "omarchy-server-menu"
+      ;;
+    help)
+      tmux display-popup -E -w 82 -h 15 -y S -b rounded -S "fg=#2e334a" \
+        "omarchy-server-bar --keys"
+      ;;
+    telemetry)
+      popup 76% 62% "omarchy-server-status; echo; read -rsn1 -p 'Press any key to close'"
+      ;;
+    failed)
+      popup 84% 76% "omarchy-server-menu --section services"
+      ;;
+    disk)
+      popup 84% 76% "omarchy-server-menu --section storage"
+      ;;
+    reboot)
+      popup 84% 76% "omarchy-server-menu --section updates"
+      ;;
+  esac
+}
+
+handle_focus() {
+  local op=${1:-cancel}
+  local current=""
+  current=$(tmux show-option -qv @om_bar_focus 2>/dev/null || true)
+
+  if [[ $op == "cancel" ]]; then
+    tmux set-option -qu @om_bar_focus 2>/dev/null || true
+    tmux switch-client -T root 2>/dev/null || true
+    tmux refresh-client -S 2>/dev/null || true
+    return 0
+  fi
+
+  if [[ $op == "open" ]]; then
+    tmux set-option -qu @om_bar_focus 2>/dev/null || true
+    tmux switch-client -T root 2>/dev/null || true
+    tmux refresh-client -S 2>/dev/null || true
+    [[ -n $current ]] && open_action "$current"
+    return 0
+  fi
+
+  mapfile -t ids < <(visible_ids)
+  local n=${#ids[@]}
+  (( n > 0 )) || return 0
+
+  local idx=0 i
+  if [[ $op == "start" ]]; then
+    idx=0
+  else
+    for (( i = 0; i < n; i++ )); do
+      if [[ ${ids[$i]} == "$current" ]]; then
+        idx=$i
+        break
+      fi
+    done
+    if [[ $op == "next" ]]; then
+      idx=$(( (idx + 1) % n ))
+    elif [[ $op == "prev" ]]; then
+      idx=$(( (idx - 1 + n) % n ))
+    fi
+  fi
+
+  tmux set-option -q @om_bar_focus "${ids[$idx]}" 2>/dev/null || true
+  tmux switch-client -T bar-focus 2>/dev/null || true
+  tmux refresh-client -S 2>/dev/null || true
+}
+
+show_keys() {
+  local a=$'\e[38;2;224;175;104m' b=$'\e[38;2;122;162;247m'
+  local m=$'\e[38;2;139;143;158m' d=$'\e[38;2;86;95;137m'
+  local bold=$'\e[1m' r=$'\e[0m'
+
+  printf '\n  %s%sOmarchy Server — Shortcuts%s  %s(esc / q to close)%s\n' "$a" "$bold" "$r" "$d" "$r"
+  printf '  %s──────────────────────────────────────────────────────────────────────────%s\n\n' "$d" "$r"
+  printf '  %sSTATUS BAR (click or keys)%s           %sOM MENU (Alt+letter)%s\n' "$b" "$r" "$b" "$r"
+  printf '  %sPrefix o / m%s  %som menu%s                %sAlt+i%s  %sFinish setup%s\n' "$a" "$r" "$m" "$r" "$a" "$r" "$m" "$r"
+  printf '  %sPrefix f%s      %sFleet picker%s           %sAlt+s%s  %sServices%s\n' "$a" "$r" "$m" "$r" "$a" "$r" "$m" "$r"
+  printf '  %sPrefix Tab%s    %sFocus bar (← → ↵)%s      %sAlt+n%s  %sNetwork%s\n' "$a" "$r" "$m" "$r" "$a" "$r" "$m" "$r"
+  printf '  %sPrefix ?%s      %sThis shortcuts card%s    %sAlt+b%s  %sStorage & backups%s\n' "$a" "$r" "$m" "$r" "$a" "$r" "$m" "$r"
+  printf '  %sAlt+o / f / ?%s %sDirect (no prefix)%s     %sAlt+a%s  %sAgent   %sAlt+u%s %sUpdates   %sAlt+f%s %sFleet%s\n\n' \
+    "$a" "$r" "$m" "$r" "$a" "$r" "$m" "$a" "$r" "$m" "$a" "$r" "$m" "$r"
+  printf '  %sTMUX%s  %sPrefix = Ctrl+Space or Ctrl+B%s  ·  %sc%s new tab  ·  %s1-9%s tab  ·  %sd%s detach\n' \
+    "$b" "$r" "$d" "$r" "$a" "$r" "$a" "$r" "$a" "$r"
+
+  local ch
+  while IFS= read -rsn1 ch; do
+    case $ch in
+      $'\e' | q | Q | '?' | '') break ;;
+    esac
+  done
+}
+
+case ${1:-} in
+  --open)
+    open_action "${2:-}"
+    exit 0
+    ;;
+  --focus)
+    handle_focus "${2:-cancel}"
+    exit 0
+    ;;
+  --keys)
+    show_keys
+    exit 0
+    ;;
+  --ids)
+    visible_ids
+    exit 0
+    ;;
+esac
+
+focus_id=${OMARCHY_BAR_FOCUS:-}
+if [[ -z $focus_id && -n ${TMUX:-} ]]; then
+  focus_id=$(tmux show-option -qv @om_bar_focus 2>/dev/null || true)
+fi
+
+pill() {
+  local id=$1 pbg=$2 pfg=$3 text=$4
+  if [[ -n $focus_id && $focus_id == "$id" ]]; then
+    pbg="#e0af68"
+    pfg="#15161e,bold"
+  fi
+  printf '#[range=user|%s]' "$id"
+  if (( ascii )); then
+    printf '#[bg=%s,fg=%s] %s #[bg=%s]' "$pbg" "$pfg" "$text" "$bg"
+  else
+    printf '#[fg=%s,bg=%s]#[bg=%s,fg=%s]%s#[fg=%s,bg=%s]' \
       "$pbg" "$bg" "$pbg" "$pfg" "$text" "$pbg" "$bg"
   fi
+  printf '#[norange] '
 }
 
 # Icons (Nerd Font Material Design glyphs, or short ASCII labels).
@@ -35,50 +224,33 @@ else
   ico_om="󰀻" ico_err="󰀪" ico_rbt="󰜉"
 fi
 
-# 1. Failed systemd units (system + user).
-failed_sys=$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l)
-failed_usr=$(systemctl --user --failed --no-legend --plain 2>/dev/null | wc -l)
-failed=$(( failed_sys + failed_usr ))
+collect_state
 
-# 2. Disk usage (%) on /.
-disk_pct=$(df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9')
-disk_pct=${disk_pct:-0}
-
-# 3. Pending kernel reboot (running kernel's modules dir removed by upgrade).
-reboot_needed=0
-if [[ ! -d "/lib/modules/$(uname -r)" ]]; then
-  reboot_needed=1
-fi
-
-alerts=0
 if (( failed > 0 )); then
-  pill "#3b1d28" "#f7768e,bold" "$ico_err ${failed} failed"
-  alerts=1
+  pill "failed" "#3b1d28" "#f7768e,bold" "$ico_err ${failed} failed"
 fi
 if (( disk_pct >= 85 )); then
-  pill "#3a261c" "#ff9e64,bold" "$ico_dsk ${disk_pct}%"
-  alerts=1
+  pill "disk" "#3a261c" "#ff9e64,bold" "$ico_dsk ${disk_pct}%"
 fi
 if (( reboot_needed )); then
-  pill "#362b1c" "#e0af68,bold" "$ico_rbt"
-  alerts=1
+  pill "reboot" "#362b1c" "#e0af68,bold" "$ico_rbt"
 fi
 
-# When everything is healthy, show calm tailnet + CPU/RAM/Disk telemetry.
+# When everything is healthy, show calm fleet/tailnet + CPU/RAM/Disk telemetry.
 if (( ! alerts )); then
-  # Tailscale status (fast, bounded).
-  if command -v tailscale >/dev/null 2>&1; then
-    ts_state=$(timeout 1 tailscale status --self --json 2>/dev/null | jq -r '.BackendState // ""' 2>/dev/null || true)
-    if [[ $ts_state == "Running" ]]; then
-      pill "#1c1f2e" "#a9b1d6" "#[fg=#9ece6a]${ico_net}#[fg=#a9b1d6] tailnet"
+  if (( ts_up )); then
+    if [[ $focus_id == "fleet" ]]; then
+      pill "fleet" "#1c1f2e" "#a9b1d6" "${ico_net} fleet"
+    elif (( ascii )); then
+      pill "fleet" "#1c1f2e" "#a9b1d6" "#[fg=#9ece6a]*#[fg=#a9b1d6] #[underscore]f#[nounderscore]leet"
+    else
+      pill "fleet" "#1c1f2e" "#a9b1d6" "#[fg=#9ece6a]${ico_net}#[fg=#a9b1d6] #[underscore]f#[nounderscore]leet"
     fi
   fi
 
-  # CPU load (1m load normalized to % of cores, fast /proc read).
   cores=$(nproc 2>/dev/null || echo 1)
   cpu_pct=$(awk -v c="$cores" '{ p = int(($1 / c) * 100 + 0.5); if (p > 100) p = 100; print p }' /proc/loadavg 2>/dev/null || echo 0)
 
-  # RAM used (MemTotal - MemAvailable, human G/M).
   mem_used=$(awk '
     /^MemTotal:/     { t = $2 }
     /^MemAvailable:/ { a = $2 }
@@ -89,16 +261,19 @@ if (( ! alerts )); then
     }
   ' /proc/meminfo 2>/dev/null || echo "0M")
 
-  if (( ascii )); then
-    pill "#1c1f2e" "#a9b1d6" "cpu ${cpu_pct}% · mem ${mem_used} · dsk ${disk_pct}%"
+  if [[ $focus_id == "telemetry" ]]; then
+    pill "telemetry" "#1c1f2e" "#a9b1d6" "${ico_cpu} ${cpu_pct}% · ${ico_mem} ${mem_used} · ${ico_dsk} ${disk_pct}%"
+  elif (( ascii )); then
+    pill "telemetry" "#1c1f2e" "#a9b1d6" "cpu ${cpu_pct}% · mem ${mem_used} · dsk ${disk_pct}%"
   else
-    pill "#1c1f2e" "#a9b1d6" "#[fg=#7aa2f7]${ico_cpu}#[fg=#a9b1d6] ${cpu_pct}% #[fg=#3b4261]· #[fg=#7aa2f7]${ico_mem}#[fg=#a9b1d6] ${mem_used} #[fg=#3b4261]· #[fg=#7aa2f7]${ico_dsk}#[fg=#a9b1d6] ${disk_pct}%"
+    pill "telemetry" "#1c1f2e" "#a9b1d6" "#[fg=#7aa2f7]${ico_cpu}#[fg=#a9b1d6] ${cpu_pct}% #[fg=#3b4261]· #[fg=#7aa2f7]${ico_mem}#[fg=#a9b1d6] ${mem_used} #[fg=#3b4261]· #[fg=#7aa2f7]${ico_dsk}#[fg=#a9b1d6] ${disk_pct}%"
   fi
 fi
 
-# Always keep the subtle om menu pill on the far right.
+# Always keep the om menu pill and ? shortcuts pill on the far right.
 if (( ascii )); then
-  pill "#2a2415" "#e0af68,bold" "om"
+  pill "om" "#2a2415" "#e0af68,bold" "#[underscore]o#[nounderscore]m"
 else
-  pill "#2a2415" "#e0af68,bold" "${ico_om} om"
+  pill "om" "#2a2415" "#e0af68,bold" "${ico_om} #[underscore]o#[nounderscore]m"
 fi
+pill "help" "#1c1f2e" "#a9b1d6,bold" "?"

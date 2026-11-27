@@ -155,14 +155,26 @@ if [[ ${1:-} == "--preview" ]]; then
 fi
 
 # A row is "<shown>\t<key>": the label, then its hint dimmed in a column.
+# Prints one fzf row: optional icon, label (with optional underlined accelerator),
+# right-side hint, and tab-separated key.
 row() {
-  local icon=$1 label=$2 hint=$3 key=$4
-
+  local icon=$1 label=$2 hint=$3 key=$4 accel=${5:-} display_label pad
   if (( icons )) && [[ -n $icon ]]; then
     label="$icon  $label"
   fi
-  # printf pads by bytes, and icons are several, so pad by characters.
-  printf '%s%*s%s\t%s\n' "$label" $(( 30 - ${#label} )) "" "${hint:+$dim$hint$reset}" "$key"
+  display_label=$label
+  if [[ -n $accel ]]; then
+    local lower_label=${label,,} lower_accel=${accel,,}
+    if [[ $lower_label == *"$lower_accel"* ]]; then
+      local prefix=${lower_label%%"$lower_accel"*}
+      local idx=${#prefix}
+      display_label="${label:0:$idx}"$'\e[4m'"${label:$idx:1}"$'\e[24m'"${label:$((idx + 1))}"
+    fi
+  fi
+  pad=$(( 30 - ${#label} ))
+  (( pad < 2 )) && pad=2
+  # Pad by plain-text character count so ANSI underline doesn't skew alignment.
+  printf '%s%*s%s\t%s\n' "$display_label" "$pad" "" "${hint:+$dim$hint$reset}" "$key"
 }
 
 # Prints the chosen row's key, after the key pressed when --expect is passed.
@@ -279,22 +291,22 @@ main_rows() {
 
   steps=$(omarchy-server-setup-steps | wc -l)
   if (( steps == 1 )); then
-    row "" "Finish setup" "1 step left" setup
+    row "" "Finish setup" "1 step left" setup i
   elif (( steps > 1 )); then
-    row "" "Finish setup" "$steps steps left" setup
+    row "" "Finish setup" "$steps steps left" setup i
   fi
 
   down=$(omarchy-server-update-watch down | wc -l)
   if (( down )); then
-    row "" "Services" "$down down" services
+    row "" "Services" "$down down" services s
   else
-    row "" "Services" "›" services
+    row "" "Services" "›" services s
   fi
-  row "" "Network" "›" network
-  row "" "Storage and backups" "›" storage
-  row "󰚩" "Agent" "" agent
-  row "" "Updates" "$updates" updates
-  row "" "Fleet" "" fleet
+  row "" "Network" "›" network n
+  row "" "Storage and backups" "›" storage b
+  row "󰚩" "Agent" "" agent a
+  row "" "Updates" "$updates" updates u
+  row "" "Fleet" "" fleet f
 }
 
 # checkupdates syncs a copy of the package databases, which takes a while, so
@@ -557,14 +569,8 @@ fleet_menu() {
   omarchy-fleet || pause
 }
 
-printf -v reload 'start:reload-sync:%q --rows-with-updates' "$0"
-printf -v preview_cmd '%q --preview {2}' "$0"
-while :; do
-  choice=$(main_rows | pick open --header "$(crumb_header)" --bind "$reload" \
-    --preview "$preview_cmd" \
-    --preview-window="right:48%:border-left:wrap") || exit 0
-
-  case $choice in
+run_section() {
+  case $1 in
     setup) setup_menu ;;
     services) services_menu ;;
     network) network_menu ;;
@@ -579,4 +585,39 @@ while :; do
       ;;
     fleet) fleet_menu ;;
   esac
+}
+
+if [[ ${1:-} == "--section" && -n ${2:-} ]]; then
+  run_section "$2"
+  exit 0
+fi
+
+printf -v reload 'start:reload-sync:%q --rows-with-updates' "$0"
+printf -v preview_cmd '%q --preview {2}' "$0"
+main_ftr="$(pill_key "type") ${muted}filter${reset}   $(pill_key "alt+key") ${muted}jump${reset}   $(pill_key "alt+?") ${muted}keys${reset}   $(pill_key "esc") ${muted}close${reset}"
+while :; do
+  raw=$(main_rows | pick open --header "$(crumb_header)" --footer "$main_ftr" \
+    --expect="alt-i,alt-s,alt-n,alt-b,alt-a,alt-u,alt-f,alt-?" \
+    --bind "$reload" \
+    --preview "$preview_cmd" \
+    --preview-window="right:48%:border-left:wrap") || exit 0
+
+  key=$(head -1 <<<"$raw")
+  choice=$(tail -n +2 <<<"$raw")
+
+  case $key in
+    alt-i) choice=setup ;;
+    alt-s) choice=services ;;
+    alt-n) choice=network ;;
+    alt-b) choice=storage ;;
+    alt-a) choice=agent ;;
+    alt-u) choice=updates ;;
+    alt-f) choice=fleet ;;
+    alt-\?)
+      omarchy-server-bar --keys
+      continue
+      ;;
+  esac
+
+  [[ -n $choice ]] && run_section "$choice"
 done
