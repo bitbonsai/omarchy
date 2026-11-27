@@ -6,7 +6,8 @@
 
 # Lists the other machines on this machine's tailnet in a type-to-filter list.
 # Enter opens a shell, Ctrl+A starts the inline agent there, Ctrl+U runs an
-# update. Inside tmux popup, each opens in its own tmux window tab. Fleet keeps
+# update. Inside tmux, a shell takes over the terminal and returns to the
+# tmux session when it ends; the agent and update open in their own tab. Fleet keeps
 # a dedicated SSH key on this machine (~/.ssh/omarchy_fleet) that you authorize
 # on each peer you want to reach.
 
@@ -91,9 +92,24 @@ format_list() {
   done
 }
 
+# A shell inside tmux would start the peer's own tmux and stack two status
+# bars. Detach this client instead, run ssh in the bare terminal, and attach
+# back to the same session when the peer's session ends.
+hand_off() {
+  local host=$1 session back
+  session=$(tmux display-message -p '#S')
+  printf -v back 'tmux attach-session -t %q' "$session"
+  tmux detach-client -E "$(printf '%q ssh %q' "$0" "$host") || read -rsn1 -p 'Press any key to go back'; exec $back"
+}
+
 connect() {
   local mode=$1 host=$2 rc=0
   ensure_key
+
+  if [[ $mode == "ssh" && -n ${TMUX:-} ]]; then
+    hand_off "$host"
+    return 0
+  fi
 
   if [[ $mode == "agent" ]]; then
     # A login shell, so a Server peer running Omarchy from its checkout finds it.
@@ -180,7 +196,7 @@ pick_peer() {
     tab_name="$host:update"
   fi
 
-  if in_popup; then
+  if in_popup && [[ $mode != "ssh" ]]; then
     tmux new-window -n "$tab_name" "$(printf '%q %q %q' "$0" "$mode" "$host")"
     return 0
   fi

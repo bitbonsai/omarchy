@@ -133,3 +133,24 @@ chmod +x "$test_tmp/bin/ssh-copy-id"
 [[ $(cat "$copy_log") == "-i $OMARCHY_FLEET_KEY.pub nas" ]] ||
   fail "omarchy fleet auth copies the Fleet public key via ssh-copy-id" "$(cat "$copy_log")"
 pass "omarchy fleet auth copies the Fleet public key via ssh-copy-id"
+
+# Inside tmux, Enter hands the terminal to the peer instead of nesting tmux.
+tmux_log="$test_tmp/tmux.log"
+cat >"$test_tmp/bin/tmux" <<EOF
+#!/bin/bash
+if [[ \$1 == display-message ]]; then echo omarchy; exit 0; fi
+printf '%s\n' "\$*" >>"$tmux_log"
+EOF
+chmod +x "$test_tmp/bin/tmux"
+rm -f "$ssh_log"
+TMUX=/tmp/fake,1,0 OMARCHY_IN_POPUP=1 FZF_PICK=nas FZF_KEY="" "$fleet"
+[[ $(cat "$tmux_log") == "detach-client -E $fleet ssh nas || read -rsn1 -p 'Press any key to go back'; exec tmux attach-session -t omarchy" && ! -e $ssh_log ]] ||
+  fail "Enter inside tmux hands the terminal to the peer and attaches back after" "$(cat "$tmux_log" 2>/dev/null)"
+pass "Enter inside tmux hands the terminal to the peer and attaches back after"
+
+# The agent still opens in its own tab.
+: >"$tmux_log"
+TMUX=/tmp/fake,1,0 OMARCHY_IN_POPUP=1 FZF_PICK=laptop FZF_KEY="ctrl-a" "$fleet"
+[[ $(cat "$tmux_log") == "new-window -n laptop:agent $fleet agent laptop" ]] ||
+  fail "Ctrl+A inside the popup opens the agent in a new tab" "$(cat "$tmux_log")"
+pass "Ctrl+A inside the popup opens the agent in a new tab"
