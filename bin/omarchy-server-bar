@@ -162,7 +162,7 @@ show_keys() {
   printf '  %sPrefix f%s      %sFleet picker%s           %sAlt+s%s  %sServices%s\n' "$a" "$r" "$m" "$r" "$a" "$r" "$m" "$r"
   printf '  %sPrefix Tab%s    %sFocus bar (← → ↵)%s      %sAlt+n%s  %sNetwork%s\n' "$a" "$r" "$m" "$r" "$a" "$r" "$m" "$r"
   printf '  %sPrefix ?%s      %sThis shortcuts card%s    %sAlt+b%s  %sStorage & backups%s\n' "$a" "$r" "$m" "$r" "$a" "$r" "$m" "$r"
-  printf '  %sAlt+o / f / ?%s %sDirect (no prefix)%s     %sAlt+a%s  %sAgent   %sAlt+u%s %sUpdates   %sAlt+f%s %sFleet%s\n\n' \
+  printf '  %sAlt+o / f / ?%s %sDirect (no prefix)%s     %sAlt+a%s %sAgent  %sAlt+u%s %sUpdates  %sAlt+f%s %sFleet%s\n\n' \
     "$a" "$r" "$m" "$r" "$a" "$r" "$m" "$a" "$r" "$m" "$a" "$r" "$m" "$r"
   printf '  %sTMUX%s  %sPrefix = Ctrl+Space or Ctrl+B%s  ·  %sc%s new tab  ·  %s1-9%s tab  ·  %sd%s detach\n' \
     "$b" "$r" "$d" "$r" "$a" "$r" "$a" "$r" "$a" "$r"
